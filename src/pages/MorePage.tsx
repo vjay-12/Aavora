@@ -18,6 +18,7 @@ import {
   Clock,
   HardDrive,
 } from "lucide-react";
+import { canUserDelete, DELETE_RESTRICTED_MESSAGE } from "../config/features";
 
 export const MorePage: React.FC = () => {
   const { user, logout } = useAuth();
@@ -36,9 +37,17 @@ export const MorePage: React.FC = () => {
   const errorParam = searchParams.get("error") || driveErrorParam;
   const msgParam = searchParams.get("msg");
 
-  const [activeSection, setActiveSection] = useState<"bin" | "members" | "security" | "drive">(
-    user?.role === "admin" && (driveConnectedParam || errorParam || driveErrorParam) ? "drive" : "bin"
-  );
+  const canDelete = canUserDelete(user?.role);
+  const [restrictedToast, setRestrictedToast] = useState<string | null>(msgParam || null);
+
+  const sectionParam = searchParams.get("section");
+  const [activeSection, setActiveSection] = useState<"bin" | "members" | "security" | "drive">(() => {
+    if (user?.role === "admin" && (driveConnectedParam || errorParam || driveErrorParam)) return "drive";
+    if (sectionParam === "bin" && canUserDelete(user?.role)) return "bin";
+    if (sectionParam === "security") return "security";
+    if (sectionParam === "members" && user?.role === "admin") return "members";
+    return canUserDelete(user?.role) ? "bin" : "security";
+  });
 
   // Fetch Drive Health (Admin only)
   const { data: driveHealth, isLoading: isHealthLoading, refetch: refetchHealth } = useQuery({
@@ -75,7 +84,7 @@ export const MorePage: React.FC = () => {
       if (!res.ok) return { items: [] };
       return res.json();
     },
-    enabled: activeSection === "bin",
+    enabled: activeSection === "bin" && canDelete,
   });
   const binItems = binData?.items || [];
 
@@ -202,12 +211,41 @@ export const MorePage: React.FC = () => {
         </p>
       </div>
 
+      {/* Helper / Restricted Toast */}
+      {restrictedToast && (
+        <div className="p-3.5 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between gap-3 animate-fadeIn">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
+            <span>{restrictedToast}</span>
+          </div>
+          <button
+            onClick={() => setRestrictedToast(null)}
+            className="text-amber-400 hover:text-white text-xs font-semibold px-1"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Tabs */}
       <div className="flex bg-white/5 border border-white/10 rounded-2xl p-1 text-xs">
         <button
-          onClick={() => setActiveSection("bin")}
+          onClick={() => {
+            if (!canDelete) {
+              setRestrictedToast(DELETE_RESTRICTED_MESSAGE);
+              setTimeout(() => setRestrictedToast(null), 3500);
+              return;
+            }
+            setActiveSection("bin");
+          }}
+          aria-disabled={!canDelete}
+          title={canDelete ? "Drive Bin" : DELETE_RESTRICTED_MESSAGE}
           className={`flex items-center justify-center gap-2 flex-1 py-2.5 rounded-xl font-medium transition-colors ${
-            activeSection === "bin" ? "bg-white/10 text-white shadow-sm" : "text-muted-foreground hover:text-white"
+            !canDelete
+              ? "opacity-50 cursor-not-allowed text-muted-foreground/60 hover:text-muted-foreground"
+              : activeSection === "bin"
+              ? "bg-white/10 text-white shadow-sm"
+              : "text-muted-foreground hover:text-white"
           }`}
         >
           <Trash2 className="w-4 h-4 text-amber-400" />

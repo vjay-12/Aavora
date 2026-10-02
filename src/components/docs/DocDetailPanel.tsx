@@ -20,7 +20,10 @@ import {
   Shield,
   Loader2,
   Copy,
+  AlertTriangle,
 } from "lucide-react";
+import { useAuth } from "../../context/AuthContext";
+import { canUserDelete, DELETE_RESTRICTED_MESSAGE } from "../../config/features";
 
 export interface DocItem {
   id: string;
@@ -43,6 +46,7 @@ interface DocDetailPanelProps {
   onToggleStar: (item: DocItem) => Promise<void>;
   onTrash: (item: DocItem) => Promise<void>;
   onUpdateTagsNotes?: (driveId: string, tags: string[], notes: string) => Promise<void>;
+  onShowRestrictedToast?: (message: string) => void;
 }
 
 export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
@@ -50,7 +54,11 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
   onClose,
   onToggleStar,
   onTrash,
+  onShowRestrictedToast,
 }) => {
+  const { user } = useAuth();
+  const canDelete = canUserDelete(user?.role);
+  const [restrictedToast, setRestrictedToast] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
   const [isEncryptingOffline, setIsEncryptingOffline] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
@@ -125,6 +133,7 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
           <span className="text-xs font-semibold text-white">Document Details</span>
         </div>
         <button
+          data-testid="doc-detail-close"
           onClick={onClose}
           className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white transition-colors"
         >
@@ -276,6 +285,12 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
 
       {/* Footer Action Buttons */}
       <div className="p-4 border-t border-white/10 bg-[#090d16] space-y-2">
+        {restrictedToast && (
+          <div className="p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2 animate-fadeIn">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>{DELETE_RESTRICTED_MESSAGE}</span>
+          </div>
+        )}
         <div className="flex gap-2">
           {!item.isFolder && (
             <button
@@ -294,9 +309,24 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
             {copiedLink ? <CheckCircle className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
           </button>
           <button
-            onClick={() => onTrash(item)}
-            className="p-2.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 transition-colors"
-            title="Move to Bin"
+            data-testid="doc-detail-trash"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (!canDelete) {
+                setRestrictedToast(true);
+                setTimeout(() => setRestrictedToast(false), 3500);
+                onShowRestrictedToast?.(DELETE_RESTRICTED_MESSAGE);
+                return;
+              }
+              onTrash(item);
+            }}
+            aria-disabled={!canDelete}
+            title={canDelete ? "Move to Bin" : DELETE_RESTRICTED_MESSAGE}
+            className={`p-2.5 rounded-xl border transition-colors ${
+              canDelete
+                ? "bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border-rose-500/20 cursor-pointer active:scale-95"
+                : "bg-white/5 text-muted-foreground/40 border-white/5 opacity-50 cursor-not-allowed hover:bg-white/5"
+            }`}
           >
             <Trash2 className="w-4 h-4" />
           </button>

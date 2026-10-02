@@ -22,13 +22,23 @@ import {
   Plus,
   Upload,
   CheckCircle2,
+  Trash2,
+  MoreVertical,
+  LayoutGrid,
+  List as ListIcon,
+  CheckSquare,
+  Square,
+  RotateCcw,
+  X,
+  Download,
 } from "lucide-react";
+import { canUserDelete, DELETE_RESTRICTED_MESSAGE } from "../config/features";
 
 interface DriveItem {
   id: string;
   name: string;
   mimeType: string;
-  isFolder: boolean;
+  isFolder?: boolean;
   size?: string;
   modifiedTime?: string;
   lastModifyingUser?: string;
@@ -41,23 +51,43 @@ import { DocDetailPanel, DocItem } from "../components/docs/DocDetailPanel";
 
 export const DocsPage: React.FC = () => {
   const { user } = useAuth();
+  const canDelete = canUserDelete(user?.role);
+
   const [searchParams, setSearchParams] = useSearchParams();
   const folderId = searchParams.get("folderId") || undefined;
   const folderName = searchParams.get("folderName") || "Vault Root";
+  const urlMsg = searchParams.get("msg");
 
   const [uploadToast, setUploadToast] = useState<{ show: boolean; fileName: string }>({
     show: false,
     fileName: "",
   });
 
-  useEffect(() => {
-    if (uploadToast.show) {
-      const timer = setTimeout(() => {
-        setUploadToast({ show: false, fileName: "" });
-      }, 4000);
-      return () => clearTimeout(timer);
-    }
-  }, [uploadToast.show]);
+  // Restricted toast for mobile tap and desktop tooltip feedback
+  const [restrictedToast, setRestrictedToast] = useState<string | null>(urlMsg || null);
+
+  // View mode: Grid vs List/Row
+  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+
+  // Multi-selection state
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  // Active open card menu (file id)
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+
+  // Admin Confirm Modal
+  const [confirmTrashModal, setConfirmTrashModal] = useState<{
+    isOpen: boolean;
+    items: DriveItem[];
+  } | null>(null);
+
+  // Admin Undo Toast
+  const [undoToast, setUndoToast] = useState<{
+    show: boolean;
+    items: DriveItem[];
+    message: string;
+  } | null>(null);
+
   const [isSeeding, setIsSeeding] = useState(false);
   const [seedMessage, setSeedMessage] = useState<string | null>(null);
 
@@ -66,7 +96,17 @@ export const DocsPage: React.FC = () => {
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<DocItem | null>(null);
 
-  // Handle URL actions like /docs?action=upload or action=new-folder or ?fileId=...
+  // Clear msg search param once read
+  useEffect(() => {
+    if (urlMsg) {
+      setRestrictedToast(urlMsg);
+      const newParams = new URLSearchParams(searchParams);
+      newParams.delete("msg");
+      setSearchParams(newParams, { replace: true });
+    }
+  }, [urlMsg, searchParams, setSearchParams]);
+
+  // Handle URL actions like /docs?action=upload or action=new-folder
   useEffect(() => {
     const action = searchParams.get("action");
     if (action === "upload") {
@@ -75,6 +115,43 @@ export const DocsPage: React.FC = () => {
       setShowNewFolderModal(true);
     }
   }, [searchParams]);
+
+  // Auto-dismiss upload toast
+  useEffect(() => {
+    if (uploadToast.show) {
+      const timer = setTimeout(() => {
+        setUploadToast({ show: false, fileName: "" });
+      }, 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [uploadToast.show]);
+
+  // Auto-dismiss restricted toast
+  useEffect(() => {
+    if (restrictedToast) {
+      const timer = setTimeout(() => {
+        setRestrictedToast(null);
+      }, 3500);
+      return () => clearTimeout(timer);
+    }
+  }, [restrictedToast]);
+
+  // Auto-dismiss undo toast
+  useEffect(() => {
+    if (undoToast?.show) {
+      const timer = setTimeout(() => {
+        setUndoToast(null);
+      }, 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [undoToast]);
+
+  // Close menus on outside click
+  useEffect(() => {
+    const closeMenu = () => setOpenMenuId(null);
+    window.addEventListener("click", closeMenu);
+    return () => window.removeEventListener("click", closeMenu);
+  }, []);
 
   // Breadcrumb path history
   const [breadcrumbHistory, setBreadcrumbHistory] = useState<Array<{ id?: string; name: string }>>(
@@ -130,11 +207,13 @@ export const DocsPage: React.FC = () => {
   const handleOpenFolder = (folder: DriveItem) => {
     setSearchParams({ folderId: folder.id, folderName: folder.name });
     setBreadcrumbHistory((prev) => [...prev, { id: folder.id, name: folder.name }]);
+    setSelectedIds([]);
   };
 
   const handleBreadcrumbClick = (index: number) => {
     const target = breadcrumbHistory[index];
     setBreadcrumbHistory(breadcrumbHistory.slice(0, index + 1));
+    setSelectedIds([]);
     if (!target.id) {
       setSearchParams({});
     } else {
@@ -142,7 +221,6 @@ export const DocsPage: React.FC = () => {
     }
   };
 
-  // Handle back button navigation
   const handleBack = () => {
     if (breadcrumbHistory.length > 1) {
       handleBreadcrumbClick(breadcrumbHistory.length - 2);
@@ -160,6 +238,107 @@ export const DocsPage: React.FC = () => {
       setBreadcrumbHistory([{ name: "Vault Root" }, { id: folderId, name: folderName }]);
     }
   }, [folderId, folderName]);
+
+  const toggleSelect = (id: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const selectAllFiles = () => {
+    if (selectedIds.length === files.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(files.map((f) => f.id));
+    }
+  };
+
+  const showDeleteRestricted = (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    e?.preventDefault();
+    setRestrictedToast(DELETE_RESTRICTED_MESSAGE);
+  };
+
+  const handleInitiateTrash = (itemsToTrash: DriveItem[]) => {
+    if (!canDelete) {
+      showDeleteRestricted();
+      return;
+    }
+    setConfirmTrashModal({
+      isOpen: true,
+      items: itemsToTrash,
+    });
+  };
+
+  const handleConfirmTrash = async () => {
+    if (!confirmTrashModal || confirmTrashModal.items.length === 0) return;
+    const itemsToTrash = confirmTrashModal.items;
+    const fileIds = itemsToTrash.map((i) => i.id);
+
+    try {
+      const res = await fetch("/api/drive/trash", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileIds,
+          fileId: fileIds[0],
+          name: itemsToTrash[0].name,
+        }),
+      });
+
+      if (!res.ok) {
+        const resData = await res.json();
+        throw new Error(resData.error || "Failed to move items to Bin");
+      }
+
+      setConfirmTrashModal(null);
+      setSelectedIds((prev) => prev.filter((id) => !fileIds.includes(id)));
+      if (selectedDoc && fileIds.includes(selectedDoc.id)) {
+        setSelectedDoc(null);
+      }
+      refetch();
+
+      setUndoToast({
+        show: true,
+        items: itemsToTrash,
+        message:
+          itemsToTrash.length > 1
+            ? `Moved ${itemsToTrash.length} items to Bin.`
+            : `Moved "${itemsToTrash[0].name}" to Bin.`,
+      });
+    } catch (err: any) {
+      alert(err.message || "Failed to move to Bin");
+    }
+  };
+
+  const handleUndo = async () => {
+    if (!undoToast || undoToast.items.length === 0) return;
+    const itemsToRestore = undoToast.items;
+    const fileIds = itemsToRestore.map((i) => i.id);
+
+    try {
+      const res = await fetch("/api/drive/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileIds,
+          fileId: fileIds[0],
+          name: itemsToRestore[0].name,
+        }),
+      });
+
+      if (!res.ok) {
+        const resData = await res.json();
+        throw new Error(resData.error || "Failed to undo delete");
+      }
+
+      setUndoToast(null);
+      refetch();
+    } catch (err: any) {
+      console.error("Failed to undo delete:", err);
+    }
+  };
 
   const categoryPalettes = [
     { bg: "from-sky-500/20 to-blue-600/10", border: "border-sky-500/30", icon: "text-sky-400" },
@@ -180,7 +359,7 @@ export const DocsPage: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
       {/* Upload Success Toast */}
       {uploadToast.show && (
         <div className="p-4 rounded-2xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs flex items-center justify-between gap-3 animate-slideDown shadow-lg shadow-emerald-500/10">
@@ -198,6 +377,31 @@ export const DocsPage: React.FC = () => {
           <button
             onClick={() => setUploadToast({ show: false, fileName: "" })}
             className="text-emerald-400 hover:text-white p-1 text-sm font-semibold"
+            aria-label="Dismiss toast"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Restricted Action Toast (Mobile tap & Laptop feedback) */}
+      {restrictedToast && (
+        <div
+          data-testid="delete-restricted-toast"
+          className="p-4 rounded-2xl bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs flex items-center justify-between gap-3 animate-slideDown shadow-lg shadow-amber-500/10 z-40"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center flex-shrink-0">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="font-bold text-sm text-white">Action Restricted</p>
+              <p className="text-[11px] text-amber-200/90">{restrictedToast}</p>
+            </div>
+          </div>
+          <button
+            onClick={() => setRestrictedToast(null)}
+            className="text-amber-400 hover:text-white p-1 text-sm font-semibold"
             aria-label="Dismiss toast"
           >
             ✕
@@ -267,8 +471,32 @@ export const DocsPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Action Controls */}
+        {/* Action Controls & View Switcher */}
         <div className="flex items-center gap-2">
+          {/* View mode toggle */}
+          <div className="flex items-center bg-white/5 border border-white/10 rounded-xl p-0.5">
+            <button
+              onClick={() => setViewMode("grid")}
+              className={`p-1.5 rounded-lg transition ${
+                viewMode === "grid" ? "bg-white/15 text-white" : "text-muted-foreground hover:text-white"
+              }`}
+              title="Grid View"
+              aria-label="Grid View"
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => setViewMode("list")}
+              className={`p-1.5 rounded-lg transition ${
+                viewMode === "list" ? "bg-white/15 text-white" : "text-muted-foreground hover:text-white"
+              }`}
+              title="List View"
+              aria-label="List View"
+            >
+              <ListIcon className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
           <button
             onClick={() => setShowUploadModal(true)}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 text-xs font-semibold text-sky-300 border border-sky-500/30 transition shadow-sm"
@@ -285,6 +513,51 @@ export const DocsPage: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Floating Bulk Action Bar */}
+      {selectedIds.length > 0 && (
+        <div
+          data-testid="bulk-action-bar"
+          className="sticky top-16 md:top-4 z-30 p-3 rounded-2xl bg-[#090d16]/95 border border-sky-500/30 backdrop-blur-xl shadow-xl flex items-center justify-between gap-3 animate-slideDown"
+        >
+          <div className="flex items-center gap-2">
+            <span className="px-2.5 py-1 rounded-lg bg-sky-500/20 text-sky-300 font-mono text-xs font-semibold">
+              {selectedIds.length} selected
+            </span>
+            <button
+              onClick={() => setSelectedIds([])}
+              className="text-xs text-muted-foreground hover:text-white px-2 py-1 rounded-lg hover:bg-white/5 transition"
+            >
+              Clear
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              data-testid="bulk-delete-button"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (!canDelete) {
+                  showDeleteRestricted(e);
+                  return;
+                }
+                const selectedItems = files.filter((f) => selectedIds.includes(f.id));
+                handleInitiateTrash(selectedItems);
+              }}
+              aria-disabled={!canDelete}
+              title={canDelete ? "Move selected to Bin" : DELETE_RESTRICTED_MESSAGE}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border transition ${
+                canDelete
+                  ? "bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border-rose-500/30 cursor-pointer active:scale-95"
+                  : "bg-white/5 text-muted-foreground/40 border-white/5 opacity-50 cursor-not-allowed hover:bg-white/5"
+              }`}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Delete Selected</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Loading State */}
       {isLoading ? (
@@ -367,7 +640,11 @@ export const DocsPage: React.FC = () => {
                   Sets up Identity, Medical, Property, Finance, Education, and Vehicle folders.
                 </p>
                 {seedMessage && (
-                  <p className={`text-xs mt-2 font-medium ${seedMessage.startsWith("Error") ? "text-rose-400" : "text-emerald-400"}`}>
+                  <p
+                    className={`text-xs mt-2 font-medium ${
+                      seedMessage.startsWith("Error") ? "text-rose-400" : "text-emerald-400"
+                    }`}
+                  >
                     {seedMessage}
                   </p>
                 )}
@@ -418,50 +695,310 @@ export const DocsPage: React.FC = () => {
           {/* Files List / Grid */}
           {files.length > 0 && (
             <section className="space-y-3">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
-                Files ({files.length})
-              </h2>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                    Files ({files.length})
+                  </h2>
+                </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {files.map((file) => {
-                  const FileIcon = getFileIcon(file.mimeType);
-
-                  return (
-                    <div
-                      key={file.id}
-                      onClick={() => setSelectedDoc(file)}
-                      className="glass-card p-4 rounded-2xl flex flex-col justify-between h-32 transition-all hover:border-sky-500/40 cursor-pointer group hover:scale-[1.01]"
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className="w-9 h-9 rounded-xl bg-sky-500/10 text-sky-400 flex items-center justify-center flex-shrink-0 group-hover:bg-sky-500/20 transition-colors">
-                          <FileIcon className="w-4 h-4" />
-                        </div>
-                        <div className="overflow-hidden">
-                          <h4 className="text-xs font-semibold text-white truncate group-hover:text-sky-300 transition-colors" title={file.name}>
-                            {file.name}
-                          </h4>
-                          <p className="text-[11px] text-muted-foreground mt-0.5">
-                            {file.size ? formatBytes(parseInt(file.size, 10)) : "Document"}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-2 border-t border-white/5">
-                        <span className="flex items-center gap-1 truncate max-w-[120px]">
-                          <User className="w-3 h-3 text-indigo-400 flex-shrink-0" />
-                          <span className="truncate">{file.lastModifyingUser}</span>
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <Clock className="w-3 h-3 text-sky-400 flex-shrink-0" />
-                          <span>{formatDate(file.modifiedTime)}</span>
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
+                <button
+                  onClick={selectAllFiles}
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-white transition"
+                >
+                  {selectedIds.length === files.length ? (
+                    <CheckSquare className="w-3.5 h-3.5 text-sky-400" />
+                  ) : (
+                    <Square className="w-3.5 h-3.5" />
+                  )}
+                  <span>{selectedIds.length === files.length ? "Deselect All" : "Select All"}</span>
+                </button>
               </div>
+
+              {/* GRID VIEW */}
+              {viewMode === "grid" ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {files.map((file) => {
+                    const FileIcon = getFileIcon(file.mimeType);
+                    const isSelected = selectedIds.includes(file.id);
+                    const isMenuOpen = openMenuId === file.id;
+
+                    return (
+                      <div
+                        key={file.id}
+                        data-testid={`file-card-${file.id}`}
+                        onClick={() => setSelectedDoc(file)}
+                        className={`glass-card p-4 rounded-2xl flex flex-col justify-between h-36 transition-all cursor-pointer group hover:scale-[1.01] relative ${
+                          isSelected ? "border-sky-500 bg-sky-500/5" : "hover:border-sky-500/40"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-start gap-2.5 overflow-hidden">
+                            <button
+                              type="button"
+                              onClick={(e) => toggleSelect(file.id, e)}
+                              className="p-1 rounded-md text-muted-foreground hover:text-sky-400 transition"
+                              aria-label="Select file"
+                            >
+                              {isSelected ? (
+                                <CheckSquare className="w-4 h-4 text-sky-400" />
+                              ) : (
+                                <Square className="w-4 h-4 opacity-50 group-hover:opacity-100" />
+                              )}
+                            </button>
+
+                            <div className="w-8 h-8 rounded-xl bg-sky-500/10 text-sky-400 flex items-center justify-center flex-shrink-0 group-hover:bg-sky-500/20 transition-colors">
+                              <FileIcon className="w-4 h-4" />
+                            </div>
+
+                            <div className="overflow-hidden">
+                              <h4
+                                className="text-xs font-semibold text-white truncate group-hover:text-sky-300 transition-colors"
+                                title={file.name}
+                              >
+                                {file.name}
+                              </h4>
+                              <p className="text-[11px] text-muted-foreground mt-0.5">
+                                {file.size ? formatBytes(parseInt(file.size, 10)) : "Document"}
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* 3-dots Card Menu Button */}
+                          <div className="relative flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              data-testid={`card-menu-trigger-${file.id}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOpenMenuId(isMenuOpen ? null : file.id);
+                              }}
+                              className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white transition"
+                              title="File actions"
+                              aria-label="File actions"
+                            >
+                              <MoreVertical className="w-3.5 h-3.5" />
+                            </button>
+
+                            {/* Dropdown Menu */}
+                            {isMenuOpen && (
+                              <div
+                                data-testid={`card-menu-dropdown-${file.id}`}
+                                className="absolute right-0 top-8 z-40 w-44 rounded-xl bg-[#0d131f] border border-white/10 shadow-2xl p-1.5 space-y-1 text-xs animate-scaleUp"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    setSelectedDoc(file);
+                                  }}
+                                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-muted-foreground hover:text-white transition"
+                                >
+                                  <FileText className="w-3.5 h-3.5 text-sky-400" />
+                                  <span>View Details</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    window.open(`/api/drive/download?id=${file.id}`, "_blank");
+                                  }}
+                                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-muted-foreground hover:text-white transition"
+                                >
+                                  <Download className="w-3.5 h-3.5 text-emerald-400" />
+                                  <span>Download</span>
+                                </button>
+                                <div className="border-t border-white/5 my-1" />
+                                <button
+                                  type="button"
+                                  data-testid={`card-menu-delete-${file.id}`}
+                                  onClick={(e) => {
+                                    setOpenMenuId(null);
+                                    if (!canDelete) {
+                                      showDeleteRestricted(e);
+                                      return;
+                                    }
+                                    handleInitiateTrash([file]);
+                                  }}
+                                  aria-disabled={!canDelete}
+                                  title={canDelete ? "Move to Bin" : DELETE_RESTRICTED_MESSAGE}
+                                  className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg transition ${
+                                    canDelete
+                                      ? "hover:bg-rose-500/10 text-rose-400 cursor-pointer"
+                                      : "opacity-50 cursor-not-allowed text-muted-foreground/50 hover:bg-transparent"
+                                  }`}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>Move to Bin</span>
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-2 border-t border-white/5">
+                          <span className="flex items-center gap-1 truncate max-w-[120px]">
+                            <User className="w-3 h-3 text-indigo-400 flex-shrink-0" />
+                            <span className="truncate">{file.lastModifyingUser || "Vault User"}</span>
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-sky-400 flex-shrink-0" />
+                            <span>{formatDate(file.modifiedTime)}</span>
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                /* LIST / ROW VIEW */
+                <div className="glass-card rounded-2xl border border-white/10 overflow-hidden divide-y divide-white/5">
+                  {files.map((file) => {
+                    const FileIcon = getFileIcon(file.mimeType);
+                    const isSelected = selectedIds.includes(file.id);
+
+                    return (
+                      <div
+                        key={file.id}
+                        data-testid={`file-row-${file.id}`}
+                        onClick={() => setSelectedDoc(file)}
+                        className={`p-3.5 flex items-center justify-between gap-3 hover:bg-white/5 cursor-pointer transition ${
+                          isSelected ? "bg-sky-500/5" : ""
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <button
+                            type="button"
+                            onClick={(e) => toggleSelect(file.id, e)}
+                            className="p-1 rounded-md text-muted-foreground hover:text-sky-400 transition flex-shrink-0"
+                            aria-label="Select file"
+                          >
+                            {isSelected ? (
+                              <CheckSquare className="w-4 h-4 text-sky-400" />
+                            ) : (
+                              <Square className="w-4 h-4 opacity-50" />
+                            )}
+                          </button>
+
+                          <div className="w-8 h-8 rounded-lg bg-sky-500/10 text-sky-400 flex items-center justify-center flex-shrink-0">
+                            <FileIcon className="w-4 h-4" />
+                          </div>
+
+                          <div className="min-w-0">
+                            <h4 className="text-xs font-semibold text-white truncate" title={file.name}>
+                              {file.name}
+                            </h4>
+                            <p className="text-[11px] text-muted-foreground">
+                              {file.size ? formatBytes(parseInt(file.size, 10)) : "Document"} •{" "}
+                              {formatDate(file.modifiedTime)}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Row Action Buttons */}
+                        <div className="flex items-center gap-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            type="button"
+                            onClick={() => window.open(`/api/drive/download?id=${file.id}`, "_blank")}
+                            className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white transition"
+                            title="Download"
+                            aria-label="Download"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                          </button>
+
+                          {/* Row Delete Button */}
+                          <button
+                            type="button"
+                            data-testid={`file-row-delete-${file.id}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (!canDelete) {
+                                showDeleteRestricted(e);
+                                return;
+                              }
+                              handleInitiateTrash([file]);
+                            }}
+                            aria-disabled={!canDelete}
+                            title={canDelete ? "Move to Bin" : DELETE_RESTRICTED_MESSAGE}
+                            className={`p-1.5 rounded-lg border transition ${
+                              canDelete
+                                ? "bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border-rose-500/20 cursor-pointer active:scale-95"
+                                : "bg-white/5 text-muted-foreground/40 border-white/5 opacity-50 cursor-not-allowed hover:bg-white/5"
+                            }`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </section>
           )}
+        </div>
+      )}
+
+      {/* Admin Confirm Delete Modal */}
+      {confirmTrashModal?.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-[#090d16] border border-white/10 p-6 rounded-3xl max-w-sm w-full space-y-4 shadow-2xl animate-scaleUp">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center mx-auto">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <div className="text-center">
+              <h3 className="text-base font-bold text-white">Move to Drive Bin?</h3>
+              <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
+                {confirmTrashModal.items.length === 1
+                  ? `Are you sure you want to move "${confirmTrashModal.items[0].name}" to the Bin?`
+                  : `Are you sure you want to move ${confirmTrashModal.items.length} items to the Bin?`}
+                {" "}You can restore them at any time from the Drive Bin.
+              </p>
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmTrashModal(null)}
+                className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-white text-xs font-medium border border-white/10 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmTrash}
+                className="flex-1 py-2.5 rounded-xl bg-rose-500 hover:bg-rose-600 text-white text-xs font-semibold shadow-lg shadow-rose-500/20 transition active:scale-95"
+              >
+                Move to Bin
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Admin Undo Toast */}
+      {undoToast?.show && (
+        <div
+          data-testid="undo-toast"
+          className="fixed bottom-20 md:bottom-8 right-4 md:right-8 z-50 p-4 rounded-2xl bg-[#090d16]/95 border border-white/10 shadow-2xl backdrop-blur-xl flex items-center gap-4 text-xs animate-slideUp"
+        >
+          <div className="flex items-center gap-2">
+            <Trash2 className="w-4 h-4 text-rose-400" />
+            <span className="text-white font-medium">{undoToast.message}</span>
+          </div>
+          <button
+            onClick={handleUndo}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 font-semibold border border-sky-500/30 transition active:scale-95"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>Undo</span>
+          </button>
+          <button
+            onClick={() => setUndoToast(null)}
+            className="text-muted-foreground hover:text-white p-1"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 
@@ -492,6 +1029,7 @@ export const DocsPage: React.FC = () => {
       <DocDetailPanel
         item={selectedDoc}
         onClose={() => setSelectedDoc(null)}
+        onShowRestrictedToast={(msg) => setRestrictedToast(msg)}
         onToggleStar={async (item) => {
           await fetch("/api/stars", {
             method: "POST",
@@ -505,13 +1043,7 @@ export const DocsPage: React.FC = () => {
           refetch();
         }}
         onTrash={async (item) => {
-          await fetch("/api/drive/trash", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ fileId: item.id, name: item.name }),
-          });
-          setSelectedDoc(null);
-          refetch();
+          handleInitiateTrash([item]);
         }}
       />
     </div>

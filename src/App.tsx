@@ -16,6 +16,16 @@ import { MorePage } from "./pages/MorePage";
 import { PwaUpdatePrompt } from "./components/common/PwaUpdatePrompt";
 import { Shield } from "lucide-react";
 
+import { canUserDelete, DELETE_RESTRICTED_MESSAGE } from "./config/features";
+
+const BinRouteRedirect: React.FC = () => {
+  const { user } = useAuth();
+  if (canUserDelete(user?.role)) {
+    return <Navigate to="/more?section=bin" replace />;
+  }
+  return <Navigate to={`/docs?msg=${encodeURIComponent(DELETE_RESTRICTED_MESSAGE)}`} replace />;
+};
+
 const AppRoutes: React.FC = () => {
   const { user, isLoading } = useAuth();
   const { isLocked, hasDeviceLock } = useLock();
@@ -52,6 +62,7 @@ const AppRoutes: React.FC = () => {
         <Route element={<AppLayout />}>
           <Route path="/" element={<Navigate to="/docs" replace />} />
           <Route path="/docs" element={<DocsPage />} />
+          <Route path="/bin" element={<BinRouteRedirect />} />
           <Route path="/home" element={<HomePage />} />
           <Route path="/saved" element={<SavedPage />} />
           <Route path="/activity" element={<ActivityPage />} />

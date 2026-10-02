@@ -10,6 +10,12 @@ export default defineConfig({
     trace: "on-first-retry",
     screenshot: "only-on-failure",
   },
+  webServer: {
+    command: "npm run dev",
+    url: "http://localhost:5173",
+    reuseExistingServer: true,
+    timeout: 120000,
+  },
   projects: [
     {
       name: "Desktop-1440x900",

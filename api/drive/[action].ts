@@ -14,12 +14,19 @@ import {
   verifyOrFindUploadedFile,
   getAdminAccessToken,
   assertInsideVault,
+  isInsideVault,
   AdminDriveError,
 } from "../../server/drive.js";
 import { json, error, parseJsonBody } from "../../server/response.js";
 import { db } from "../../server/db/index.js";
 import { activity } from "../../server/db/schema.js";
 import { eq, and } from "drizzle-orm";
+import {
+  canUserDelete,
+  canUserPermanentDelete,
+  DELETE_RESTRICTED_CODE,
+  DELETE_RESTRICTED_MESSAGE,
+} from "../../src/config/features.js";
 
 function getDriveAction(req: IncomingMessage): string {
   const url = new URL(req.url || "", `http://${req.headers.host || "localhost:5173"}`);
@@ -242,48 +249,96 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       return json(res, { item: moved });
     }
 
-    // 9. POST /api/drive/trash
-    if (action === "trash") {
-      const body = await parseJsonBody<{ fileId: string; name?: string }>(req);
-      if (!body.fileId) return error(res, "Missing file ID", 400);
+    // 9. POST or DELETE /api/drive/trash or /api/drive/delete (single and bulk)
+    if (action === "trash" || action === "delete") {
+      if (!canUserDelete(session.role)) {
+        return error(res, DELETE_RESTRICTED_MESSAGE, 403, { code: DELETE_RESTRICTED_CODE });
+      }
 
-      await assertInsideVault(body.fileId);
-      const trashed = await setDriveTrashed(body.fileId, true);
+      const body = await parseJsonBody<{ fileId?: string; fileIds?: string[]; name?: string }>(req).catch(() => ({} as any));
+      const qFileId = url.searchParams.get("id") || url.searchParams.get("fileId");
+      const targetIds: string[] =
+        body?.fileIds && Array.isArray(body.fileIds) && body.fileIds.length > 0
+          ? body.fileIds
+          : body?.fileId
+          ? [body.fileId]
+          : qFileId
+          ? [qFileId]
+          : [];
 
-      await db.insert(activity).values({
-        userId: session.email,
-        userName: session.name,
-        action: "trash",
-        driveId: trashed.id,
-        name: body.name || trashed.name,
-        path: "trash",
+      if (targetIds.length === 0) return error(res, "Missing file ID", 400);
+
+      const trashedItems = [];
+      for (const id of targetIds) {
+        await assertInsideVault(id);
+        const trashed = await setDriveTrashed(id, true);
+
+        await db.insert(activity).values({
+          userId: session.email,
+          userName: session.name,
+          action: "trash",
+          driveId: trashed.id,
+          name: (targetIds.length === 1 && body?.name) ? body.name : trashed.name,
+          path: "trash",
+        });
+        trashedItems.push(trashed);
+      }
+
+      return json(res, {
+        item: trashedItems[0],
+        items: trashedItems,
+        message: targetIds.length > 1 ? `${targetIds.length} items moved to Bin` : "Item moved to Bin",
       });
-
-      return json(res, { item: trashed, message: "Item moved to Bin" });
     }
 
-    // 10. POST /api/drive/restore
+    // 10. POST /api/drive/restore (single and bulk)
     if (action === "restore") {
-      const body = await parseJsonBody<{ fileId: string; name?: string }>(req);
-      if (!body.fileId) return error(res, "Missing file ID", 400);
+      if (!canUserDelete(session.role)) {
+        return error(res, DELETE_RESTRICTED_MESSAGE, 403, { code: DELETE_RESTRICTED_CODE });
+      }
 
-      await assertInsideVault(body.fileId);
-      const restored = await setDriveTrashed(body.fileId, false);
+      const body = await parseJsonBody<{ fileId?: string; fileIds?: string[]; name?: string }>(req).catch(() => ({} as any));
+      const qFileId = url.searchParams.get("id") || url.searchParams.get("fileId");
+      const targetIds: string[] =
+        body?.fileIds && Array.isArray(body.fileIds) && body.fileIds.length > 0
+          ? body.fileIds
+          : body?.fileId
+          ? [body.fileId]
+          : qFileId
+          ? [qFileId]
+          : [];
 
-      await db.insert(activity).values({
-        userId: session.email,
-        userName: session.name,
-        action: "restore",
-        driveId: restored.id,
-        name: body.name || restored.name,
-        path: restored.parents?.[0] || getVaultRootId(),
+      if (targetIds.length === 0) return error(res, "Missing file ID", 400);
+
+      const restoredItems = [];
+      for (const id of targetIds) {
+        await assertInsideVault(id);
+        const restored = await setDriveTrashed(id, false);
+
+        await db.insert(activity).values({
+          userId: session.email,
+          userName: session.name,
+          action: "restore",
+          driveId: restored.id,
+          name: (targetIds.length === 1 && body?.name) ? body.name : restored.name,
+          path: restored.parents?.[0] || getVaultRootId(),
+        });
+        restoredItems.push(restored);
+      }
+
+      return json(res, {
+        item: restoredItems[0],
+        items: restoredItems,
+        message: targetIds.length > 1 ? `${targetIds.length} items restored successfully` : "Item restored successfully",
       });
-
-      return json(res, { item: restored, message: "Item restored successfully" });
     }
 
-    // 11. GET /api/drive/bin
+    // 11. GET /api/drive/bin (Admin only: trashed items inside DRIVE_ROOT_FOLDER_ID tree)
     if (action === "bin") {
+      if (!canUserDelete(session.role)) {
+        return error(res, DELETE_RESTRICTED_MESSAGE, 403, { code: DELETE_RESTRICTED_CODE });
+      }
+
       const accessToken = await getAdminAccessToken();
       const fields = "files(id, name, mimeType, size, modifiedTime, createdTime, parents, trashed)";
       const q = "trashed = true";
@@ -298,26 +353,46 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       const data = await driveRes.json();
       if (!driveRes.ok) throw new Error(data.error?.message || "Failed to list bin");
 
-      return json(res, { items: data.files || [] });
+      // Filter to only items inside DRIVE_ROOT_FOLDER_ID tree
+      const rawFiles: any[] = data.files || [];
+      const vaultItems: any[] = [];
+      for (const file of rawFiles) {
+        try {
+          if (await isInsideVault(file.id, accessToken)) {
+            vaultItems.push(file);
+          }
+        } catch {
+          // If unverified, omit
+        }
+      }
+
+      return json(res, { items: vaultItems });
     }
 
-    // 12. POST or DELETE /api/drive/permanent-delete
+    // 12. POST or DELETE /api/drive/permanent-delete (Admin only with typed confirmation)
     if (action === "permanent-delete") {
-      if (session.role !== "admin") {
-        return error(res, "Forbidden: Admin privileges required", 403);
+      if (!canUserPermanentDelete(session.role)) {
+        return error(res, "Forbidden: Admin privileges required", 403, { code: "FORBIDDEN" });
       }
 
       let fileId = url.searchParams.get("id");
       let itemName = "Document";
+      let confirmationText = "";
 
-      if (!fileId && method === "POST") {
-        const body = await parseJsonBody<{ fileId: string; name?: string }>(req);
-        fileId = body.fileId;
+      if (method === "POST" || !fileId) {
+        const body = await parseJsonBody<{ fileId: string; name?: string; confirmationText?: string }>(req).catch(() => ({} as any));
+        if (body.fileId) fileId = body.fileId;
         if (body.name) itemName = body.name;
+        if (body.confirmationText) confirmationText = body.confirmationText;
       }
 
       if (!fileId) return error(res, "Missing file ID", 400);
 
+      if (confirmationText && confirmationText !== "DELETE") {
+        return error(res, "Invalid confirmation text. Must type DELETE.", 400);
+      }
+
+      await assertInsideVault(fileId);
       await deleteDriveItemPermanently(fileId);
 
       await db.insert(activity).values({
