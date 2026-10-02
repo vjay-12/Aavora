@@ -59,8 +59,8 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
   onShowRestrictedToast,
   onOpenPreview,
 }) => {
-  const { user } = useAuth();
-  const canDelete = canUserDelete(user?.role);
+  const { user, isAdmin } = useAuth();
+  const canDelete = Boolean(isAdmin ?? user?.isAdmin);
   const [restrictedToast, setRestrictedToast] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
   const [isEncryptingOffline, setIsEncryptingOffline] = useState(false);

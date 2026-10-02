@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { authenticateRequest } from "../../server/auth.js";
+import { authenticateRequest, requireAdmin } from "../../server/auth.js";
 import {
   getVaultRootId,
   listDriveItems,
@@ -22,8 +22,6 @@ import { db } from "../../server/db/index.js";
 import { activity } from "../../server/db/schema.js";
 import { eq, and } from "drizzle-orm";
 import {
-  canUserDelete,
-  canUserPermanentDelete,
   DELETE_RESTRICTED_CODE,
   DELETE_RESTRICTED_MESSAGE,
 } from "../../src/config/features.js";
@@ -54,6 +52,11 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   try {
     const session = await authenticateRequest(req);
     if (!session) return error(res, "Unauthorized", 401);
+
+    // Global guard: ALL DELETE methods on Drive endpoints strictly require admin
+    if (method === "DELETE" && !requireAdmin(session)) {
+      return error(res, DELETE_RESTRICTED_MESSAGE, 403, { code: DELETE_RESTRICTED_CODE });
+    }
 
     const url = new URL(req.url || "", `http://${req.headers.host || "localhost:5173"}`);
 
@@ -424,9 +427,29 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       return json(res, { item: moved });
     }
 
-    // 9. POST or DELETE /api/drive/trash or /api/drive/delete (single and bulk)
-    if (action === "trash" || action === "delete") {
-      if (!canUserDelete(session.role)) {
+    // DELETE /api/drive/file or DELETE /api/drive/folder
+    if ((action === "file" || action === "folder") && method === "DELETE") {
+      if (!requireAdmin(session)) {
+        return error(res, DELETE_RESTRICTED_MESSAGE, 403, { code: DELETE_RESTRICTED_CODE });
+      }
+      const qFileId = url.searchParams.get("id") || url.searchParams.get("fileId");
+      if (!qFileId) return error(res, "Missing file ID", 400);
+      await assertInsideVault(qFileId);
+      const trashed = await setDriveTrashed(qFileId, true);
+      await db.insert(activity).values({
+        userId: session.email,
+        userName: session.name,
+        action: "trash",
+        driveId: trashed.id,
+        name: trashed.name,
+        path: "trash",
+      });
+      return json(res, { item: trashed, message: "Item moved to Bin" });
+    }
+
+    // 9. POST or DELETE /api/drive/trash or /api/drive/delete or /api/drive/remove (single and bulk)
+    if (action === "trash" || action === "delete" || action === "remove") {
+      if (!requireAdmin(session)) {
         return error(res, DELETE_RESTRICTED_MESSAGE, 403, { code: DELETE_RESTRICTED_CODE });
       }
 
@@ -468,7 +491,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     // 10. POST /api/drive/restore (single and bulk)
     if (action === "restore") {
-      if (!canUserDelete(session.role)) {
+      if (!requireAdmin(session)) {
         return error(res, DELETE_RESTRICTED_MESSAGE, 403, { code: DELETE_RESTRICTED_CODE });
       }
 
@@ -510,7 +533,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     // 11. GET /api/drive/bin (Admin only: trashed items inside DRIVE_ROOT_FOLDER_ID tree)
     if (action === "bin") {
-      if (!canUserDelete(session.role)) {
+      if (!requireAdmin(session)) {
         return error(res, DELETE_RESTRICTED_MESSAGE, 403, { code: DELETE_RESTRICTED_CODE });
       }
 
@@ -546,8 +569,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     // 12. POST or DELETE /api/drive/permanent-delete (Admin only with typed confirmation)
     if (action === "permanent-delete") {
-      if (!canUserPermanentDelete(session.role)) {
-        return error(res, "Forbidden: Admin privileges required", 403, { code: "FORBIDDEN" });
+      if (!requireAdmin(session)) {
+        return error(res, DELETE_RESTRICTED_MESSAGE, 403, { code: DELETE_RESTRICTED_CODE });
       }
 
       let fileId = url.searchParams.get("id");
@@ -584,7 +607,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     // 13. POST /api/drive/seed-categories
     if (action === "seed-categories") {
-      if (session.role !== "admin") {
+      if (!requireAdmin(session)) {
         return error(res, "Forbidden: Only admins can seed categories", 403);
       }
 

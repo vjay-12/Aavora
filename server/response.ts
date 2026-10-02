@@ -18,7 +18,7 @@ export function error(res: ServerResponse, message: string, status = 400, extra?
   setSecurityHeaders(res);
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json");
-  res.end(JSON.stringify({ error: message, status, ...extra }));
+  res.end(JSON.stringify({ error: message, message, status, ...extra }));
 }
 
 export async function parseJsonBody<T = unknown>(req: any): Promise<T> {

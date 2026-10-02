@@ -10,10 +10,12 @@ export interface UserSession {
   givenName?: string;
   picture?: string;
   role: "admin" | "member";
+  isAdmin?: boolean;
 }
 
 interface AuthContextType {
   user: UserSession | null;
+  isAdmin: boolean;
   isLoading: boolean;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -30,7 +32,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const res = await fetch("/api/auth/me");
       if (res.ok) {
         const data = await res.json();
-        setUser(data.user || null);
+        const userData = data.user || null;
+        const isAdmin = Boolean(data.isAdmin ?? userData?.isAdmin);
+        if (userData) {
+          userData.isAdmin = isAdmin;
+        }
+        setUser(userData);
       } else {
         setUser(null);
       }
@@ -58,8 +65,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     window.location.href = "/";
   };
 
+  const isAdmin = Boolean(user?.isAdmin);
+
   return (
-    <AuthContext.Provider value={{ user, isLoading, logout, refreshUser: fetchSession }}>
+    <AuthContext.Provider value={{ user, isAdmin, isLoading, logout, refreshUser: fetchSession }}>
       {children}
     </AuthContext.Provider>
   );

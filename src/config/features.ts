@@ -10,18 +10,31 @@ export const DELETE_RESTRICTED_CODE = "DELETE_RESTRICTED";
 export const DELETE_RESTRICTED_MESSAGE = "Only the admin can delete files right now.";
 
 /**
- * Single source of truth for whether a user role can perform delete/trash/restore/bin operations.
- * - 'admin' is always permitted.
- * - 'member' is governed strictly by MEMBER_DELETE_ENABLED.
+ * Client helper to check whether the current user is permitted to delete/trash/restore.
+ * Only returns true if isAdmin is true (or in backward compatible role/flag testing).
  */
-export function canUserDelete(role?: string | null): boolean {
-  if (role === "admin") return true;
+export function canUserDelete(userOrAdminOrRole?: { isAdmin?: boolean; role?: string } | boolean | string | null): boolean {
+  if (typeof userOrAdminOrRole === "boolean") return userOrAdminOrRole;
+  if (userOrAdminOrRole && typeof userOrAdminOrRole === "object") {
+    if (typeof userOrAdminOrRole.isAdmin === "boolean") {
+      return userOrAdminOrRole.isAdmin;
+    }
+    return userOrAdminOrRole.role === "admin" || MEMBER_DELETE_ENABLED;
+  }
+  if (userOrAdminOrRole === "admin") return true;
   return MEMBER_DELETE_ENABLED;
 }
 
 /**
  * Permanent deletion is strictly restricted to admin.
  */
-export function canUserPermanentDelete(role?: string | null): boolean {
-  return role === "admin";
+export function canUserPermanentDelete(userOrAdminOrRole?: { isAdmin?: boolean; role?: string } | boolean | string | null): boolean {
+  if (typeof userOrAdminOrRole === "boolean") return userOrAdminOrRole;
+  if (userOrAdminOrRole && typeof userOrAdminOrRole === "object") {
+    if (typeof userOrAdminOrRole.isAdmin === "boolean") {
+      return userOrAdminOrRole.isAdmin;
+    }
+    return userOrAdminOrRole.role === "admin";
+  }
+  return userOrAdminOrRole === "admin";
 }

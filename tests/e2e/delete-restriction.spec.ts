@@ -25,6 +25,11 @@ const mockFiles = [
 test.describe("Delete Restriction & Bin UI (Desktop & Mobile)", () => {
   test.describe("Member Role (Restrictions Active)", () => {
     test.beforeEach(async ({ page }) => {
+      page.on("pageerror", (err) => console.error("[BROWSER ERROR]:", err.message));
+      page.on("console", (msg) => {
+        if (msg.type() === "error") console.error("[BROWSER LOG ERROR]:", msg.text());
+      });
+
       // Mock /api/auth/me as member
       await page.route("**/api/auth/me", async (route) => {
         await route.fulfill({
@@ -36,7 +41,27 @@ test.describe("Delete Restriction & Bin UI (Desktop & Mobile)", () => {
               email: "member@aavora.family",
               name: "Family Member",
               role: "member",
+              isAdmin: false,
             },
+            isAdmin: false,
+          }),
+        });
+      });
+
+      // Mock /api/me as member too
+      await page.route("**/api/me", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            user: {
+              id: 2,
+              email: "member@aavora.family",
+              name: "Family Member",
+              role: "member",
+              isAdmin: false,
+            },
+            isAdmin: false,
           }),
         });
       });
@@ -50,6 +75,23 @@ test.describe("Delete Restriction & Bin UI (Desktop & Mobile)", () => {
             items: mockFiles,
             rootFolderId: "root_123",
           }),
+        });
+      });
+
+      // Mock stars & activity
+      await page.route("**/api/stars*", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ files: [], stars: [] }),
+        });
+      });
+
+      await page.route("**/api/activity*", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ items: [] }),
         });
       });
     });
@@ -105,8 +147,10 @@ test.describe("Delete Restriction & Bin UI (Desktop & Mobile)", () => {
       );
 
       // 3. Document Detail Panel Delete Button
-      // Click file row to open detail panel
-      await page.locator("[data-testid='file-row-test-file-1']").click();
+      // Switch back to grid view and open details from card menu
+      await page.getByRole("button", { name: "Grid View" }).click();
+      await page.locator("[data-testid='card-menu-trigger-test-file-1']").click();
+      await page.getByRole("button", { name: "View Details" }).click();
       await expect(page.getByText("Document Details")).toBeVisible();
 
       const detailTrashBtn = page.locator("[data-testid='doc-detail-trash']");
@@ -166,7 +210,27 @@ test.describe("Delete Restriction & Bin UI (Desktop & Mobile)", () => {
               email: "admin@aavora.family",
               name: "Vault Admin",
               role: "admin",
+              isAdmin: true,
             },
+            isAdmin: true,
+          }),
+        });
+      });
+
+      // Mock /api/me as admin too
+      await page.route("**/api/me", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            user: {
+              id: 1,
+              email: "admin@aavora.family",
+              name: "Vault Admin",
+              role: "admin",
+              isAdmin: true,
+            },
+            isAdmin: true,
           }),
         });
       });
@@ -180,6 +244,23 @@ test.describe("Delete Restriction & Bin UI (Desktop & Mobile)", () => {
             items: mockFiles,
             rootFolderId: "root_123",
           }),
+        });
+      });
+
+      // Mock stars & activity
+      await page.route("**/api/stars*", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ files: [], stars: [] }),
+        });
+      });
+
+      await page.route("**/api/activity*", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ items: [] }),
         });
       });
 

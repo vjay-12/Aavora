@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import {
   authenticateRequest,
+  requireAdmin,
   parseCookies,
   createOAuthState,
   verifyOAuthState,
@@ -47,8 +48,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         return error(res, "Unauthorized", 401);
       }
 
-      const env = getEnv();
-      if (user.role !== "admin" || user.email.toLowerCase() !== env.ADMIN_EMAIL.toLowerCase()) {
+      if (!requireAdmin(user)) {
         return error(res, "Forbidden: Only the designated admin can connect Google Drive.", 403);
       }
 
@@ -59,6 +59,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         `${OAUTH_STATE_COOKIE}=${cookieValue}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600${isProd ? "; Secure" : ""}`
       );
 
+      const env = getEnv();
       const redirectUri = getOAuthRedirectUri();
       const scope = [
         "openid",
@@ -126,7 +127,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       const session = await authenticateRequest(req);
       if (!session) return error(res, "Unauthorized", 401);
 
-      if (session.role !== "admin") {
+      if (!requireAdmin(session)) {
         return error(res, "Forbidden: Admin privileges required", 403);
       }
 

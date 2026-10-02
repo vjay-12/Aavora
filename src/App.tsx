@@ -19,8 +19,9 @@ import { Shield } from "lucide-react";
 import { canUserDelete, DELETE_RESTRICTED_MESSAGE } from "./config/features";
 
 const BinRouteRedirect: React.FC = () => {
-  const { user } = useAuth();
-  if (canUserDelete(user?.role)) {
+  const { user, isAdmin } = useAuth();
+  const canDelete = Boolean(isAdmin ?? user?.isAdmin);
+  if (canDelete) {
     return <Navigate to="/more?section=bin" replace />;
   }
   return <Navigate to={`/docs?msg=${encodeURIComponent(DELETE_RESTRICTED_MESSAGE)}`} replace />;

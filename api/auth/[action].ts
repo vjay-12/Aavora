@@ -12,6 +12,7 @@ import {
   createOAuthState,
   verifyOAuthState,
   OAUTH_STATE_COOKIE,
+  isAdminEmail,
 } from "../../server/auth.js";
 import { handleAdminDriveConnectCallback, getAdminAccessToken } from "../../server/drive.js";
 import { checkRateLimit } from "../../server/rate-limit.js";
@@ -242,12 +243,14 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
           .where(eq(users.id, userRecord.id));
       }
 
+      const isUserAdmin = isAdminEmail(userRecord.email);
       // Store session in 30-day encrypted cookie
       const sessionToken = await createSessionToken({
         id: userRecord.id,
         email: userRecord.email,
         name: finalName,
-        role: userRecord.role as "admin" | "member",
+        role: isUserAdmin ? "admin" : "member",
+        isAdmin: isUserAdmin,
         givenName: finalGivenName || undefined,
         picture: finalPicture || undefined,
       });
@@ -318,12 +321,14 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
                   picture: newPicture || undefined,
                 };
 
+                const isUserAdmin = isAdminEmail(user.email);
                 // Re-issue session cookie with updated credentials
                 const refreshedToken = await createSessionToken({
                   id: user.id,
                   email: user.email,
                   name: user.name,
-                  role: user.role,
+                  role: isUserAdmin ? "admin" : "member",
+                  isAdmin: isUserAdmin,
                   givenName: user.givenName,
                   picture: user.picture,
                 });
@@ -337,15 +342,18 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       }
     }
 
+    const isUserAdmin = isAdminEmail(user.email);
     return json(res, {
       user: {
         id: user.id,
         email: user.email,
         name: user.name,
-        role: user.role,
+        role: isUserAdmin ? "admin" : "member",
+        isAdmin: isUserAdmin,
         givenName: user.givenName,
         picture: user.picture,
       },
+      isAdmin: isUserAdmin,
     });
   }
 

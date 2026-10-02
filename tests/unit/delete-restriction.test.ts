@@ -6,13 +6,15 @@ import {
   canUserDelete,
   canUserPermanentDelete,
 } from "../../src/config/features.js";
-import { createSessionToken } from "../../server/auth.js";
+import { createSessionToken, isAdminEmail, requireAdmin, authenticateRequest } from "../../server/auth.js";
 import { getEnv } from "../../server/env.js";
 import { getVaultRootId } from "../../server/drive.js";
 import driveHandler from "../../api/drive/[action].js";
 import { db } from "../../server/db/index.js";
 import { users, activity } from "../../server/db/schema.js";
 import { eq, and } from "drizzle-orm";
+import fs from "fs";
+import path from "path";
 
 describe("Delete Restriction & Feature Flag Access Control", () => {
   let adminSessionToken: string;
@@ -280,7 +282,7 @@ describe("Delete Restriction & Feature Flag Access Control", () => {
       expect(body.error).toBe("Only the admin can delete files right now.");
     });
 
-    it("Member calling /api/drive/permanent-delete gets 403 Forbidden", async () => {
+    it("Member calling /api/drive/permanent-delete gets 403 DELETE_RESTRICTED", async () => {
       const req = createFakeReq({
         method: "POST",
         url: "/api/drive/permanent-delete",
@@ -293,7 +295,41 @@ describe("Delete Restriction & Feature Flag Access Control", () => {
 
       expect(getCode()).toBe(403);
       const body = getBody();
-      expect(body.error).toMatch(/Admin privileges required/);
+      expect(body.code).toBe(DELETE_RESTRICTED_CODE);
+      expect(body.message || body.error).toBe(DELETE_RESTRICTED_MESSAGE);
+    });
+
+    it("Member calling DELETE /api/drive/file gets 403 DELETE_RESTRICTED", async () => {
+      const req = createFakeReq({
+        method: "DELETE",
+        url: "/api/drive/file?id=file_123",
+        token: memberSessionToken,
+      });
+      const { res, getCode, getBody } = createFakeRes();
+
+      await driveHandler(req, res);
+
+      expect(getCode()).toBe(403);
+      const body = getBody();
+      expect(body.code).toBe(DELETE_RESTRICTED_CODE);
+      expect(body.message || body.error).toBe(DELETE_RESTRICTED_MESSAGE);
+    });
+
+    it("Member calling /api/drive/remove gets 403 DELETE_RESTRICTED", async () => {
+      const req = createFakeReq({
+        method: "POST",
+        url: "/api/drive/remove",
+        token: memberSessionToken,
+        body: { fileId: "file_123" },
+      });
+      const { res, getCode, getBody } = createFakeRes();
+
+      await driveHandler(req, res);
+
+      expect(getCode()).toBe(403);
+      const body = getBody();
+      expect(body.code).toBe(DELETE_RESTRICTED_CODE);
+      expect(body.message || body.error).toBe(DELETE_RESTRICTED_MESSAGE);
     });
   });
 
@@ -493,6 +529,117 @@ describe("Delete Restriction & Feature Flag Access Control", () => {
 
       expect(getValidCode()).toBe(200);
       expect(permanentDeleteCalled).toBe(true);
+    });
+  });
+
+  describe("4. Single Source of Truth: isAdminEmail & requireAdmin", () => {
+    it("isAdminEmail performs case-insensitive trimmed comparison against ADMIN_EMAIL", () => {
+      const env = getEnv();
+      const realAdmin = env.ADMIN_EMAIL;
+
+      expect(isAdminEmail(realAdmin)).toBe(true);
+      expect(isAdminEmail(`  ${realAdmin.toUpperCase()}  `)).toBe(true);
+      expect(isAdminEmail(`  ${realAdmin.toLowerCase()}  `)).toBe(true);
+
+      // Non-admins return false
+      expect(isAdminEmail("attacker@evil.com")).toBe(false);
+      expect(isAdminEmail(testMemberEmail)).toBe(false);
+      expect(isAdminEmail("")).toBe(false);
+      expect(isAdminEmail(null)).toBe(false);
+      expect(isAdminEmail(undefined)).toBe(false);
+    });
+
+    it("requireAdmin does NOT rely on role column or cookie role; only verified email matching ADMIN_EMAIL", () => {
+      const env = getEnv();
+
+      // Session with role 'admin' but member email MUST be rejected
+      const forgedSession: any = {
+        id: 99,
+        email: "forged_admin@aavora.internal",
+        name: "Fake Admin",
+        role: "admin",
+        isAdmin: true,
+      };
+      expect(requireAdmin(forgedSession)).toBe(false);
+
+      // Legitimate admin session
+      const validAdminSession: any = {
+        id: 1,
+        email: env.ADMIN_EMAIL,
+        name: "Legit Admin",
+        role: "admin",
+        isAdmin: true,
+      };
+      expect(requireAdmin(validAdminSession)).toBe(true);
+
+      // Null or empty session
+      expect(requireAdmin(null)).toBe(false);
+      expect(requireAdmin(undefined)).toBe(false);
+      expect(requireAdmin({} as any)).toBe(false);
+    });
+  });
+
+  describe("5. DB Verification & Active Check", () => {
+    it("Deactivated user in Neon DB is rejected and cannot access endpoints", async () => {
+      const deactivatedEmail = "deactivated_member_spec@aavora.internal";
+      const [existing] = await db
+        .select()
+        .from(users)
+        .where(eq(users.email, deactivatedEmail))
+        .limit(1);
+
+      if (!existing) {
+        await db.insert(users).values({
+          email: deactivatedEmail,
+          name: "Deactivated User",
+          role: "member",
+          active: false,
+        });
+      } else {
+        await db.update(users).set({ active: false }).where(eq(users.email, deactivatedEmail));
+      }
+
+      const deactivatedToken = await createSessionToken({
+        id: 999,
+        email: deactivatedEmail,
+        name: "Deactivated User",
+        role: "member",
+      });
+
+      const fakeReq = createFakeReq({
+        method: "GET",
+        url: "/api/drive/list",
+        token: deactivatedToken,
+      });
+
+      const authenticated = await authenticateRequest(fakeReq);
+      expect(authenticated).toBeNull();
+    });
+  });
+
+  describe("6. Regression Test: All Trash/Delete Routes Enforce requireAdmin", () => {
+    it("api/drive/[action].ts guards every trash, delete, permanent-delete, restore, and bin action with requireAdmin", () => {
+      const driveHandlerFile = path.resolve(import.meta.dirname, "../../api/drive/[action].ts");
+      const fileContent = fs.readFileSync(driveHandlerFile, "utf-8");
+
+      // Verify requireAdmin is imported from server/auth.js
+      expect(fileContent).toMatch(/import\s*\{[^}]*requireAdmin[^}]*\}\s*from\s*["']\.\.\/\.\.\/server\/auth(\.js)?["']/);
+
+      // Verify every destructive or bin action checks requireAdmin
+      const criticalActions = ["trash", "delete", "permanent-delete", "restore", "bin"];
+      for (const actionName of criticalActions) {
+        // Find the action block in the source code
+        const actionIdx = fileContent.indexOf(`action === "${actionName}"`);
+        expect(actionIdx).toBeGreaterThan(-1);
+
+        // Within the next 300 characters of the action declaration, requireAdmin must be called
+        const actionSnippet = fileContent.slice(actionIdx, actionIdx + 300);
+        expect(actionSnippet).toContain("requireAdmin(session)");
+        expect(actionSnippet).toContain(DELETE_RESTRICTED_CODE);
+      }
+
+      // Verify global DELETE method guard exists
+      expect(fileContent).toMatch(/method === ["']DELETE["']\s*&&\s*!requireAdmin\(session\)/);
     });
   });
 });

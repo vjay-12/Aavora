@@ -20,6 +20,7 @@ export interface SessionPayload {
   email: string;
   name: string;
   role: "admin" | "member";
+  isAdmin?: boolean;
   givenName?: string;
   picture?: string;
 }
@@ -29,6 +30,7 @@ export interface AuthenticatedUser {
   email: string;
   name: string;
   role: "admin" | "member";
+  isAdmin?: boolean;
   givenName?: string;
   picture?: string;
 }
@@ -174,6 +176,28 @@ export function verifyOAuthState(
 }
 
 /**
+ * Single source of truth helper that checks if an email matches ADMIN_EMAIL.
+ * Case-insensitive, trimmed comparison.
+ */
+export function isAdminEmail(email?: string | null): boolean {
+  if (!email) return false;
+  const env = getEnv();
+  const normalizedEmail = email.trim().toLowerCase();
+  const normalizedAdmin = (env.ADMIN_EMAIL || "").trim().toLowerCase();
+  return Boolean(normalizedAdmin && normalizedEmail === normalizedAdmin);
+}
+
+/**
+ * Server guard checking that session exists, has a verified email,
+ * and matches the designated ADMIN_EMAIL.
+ * Does NOT rely on the role column or on a role stored in the cookie.
+ */
+export function requireAdmin(session?: AuthenticatedUser | SessionPayload | null): boolean {
+  if (!session || !session.email) return false;
+  return isAdminEmail(session.email);
+}
+
+/**
  * Authenticates request and verifies user exists in Neon users table and is active.
  * Session stores strictly user identity (no Drive tokens).
  */
@@ -200,11 +224,14 @@ export async function authenticateRequest(
       return null;
     }
 
+    const isUserAdmin = isAdminEmail(userRecord.email);
+
     return {
       id: userRecord.id,
       email: userRecord.email,
       name: userRecord.name,
-      role: userRecord.role as "admin" | "member",
+      role: isUserAdmin ? "admin" : "member",
+      isAdmin: isUserAdmin,
       givenName: userRecord.givenName || undefined,
       picture: userRecord.picture || undefined,
     };

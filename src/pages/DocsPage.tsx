@@ -51,8 +51,8 @@ import { DocDetailPanel, DocItem } from "../components/docs/DocDetailPanel";
 import { DocumentPreview } from "../components/docs/DocumentPreview";
 
 export const DocsPage: React.FC = () => {
-  const { user } = useAuth();
-  const canDelete = canUserDelete(user?.role);
+  const { user, isAdmin } = useAuth();
+  const canDelete = Boolean(isAdmin ?? user?.isAdmin);
 
   const [searchParams, setSearchParams] = useSearchParams();
   const folderId = searchParams.get("folderId") || undefined;
@@ -128,12 +128,13 @@ export const DocsPage: React.FC = () => {
     }
   }, [uploadToast.show]);
 
+
   // Auto-dismiss restricted toast
   useEffect(() => {
     if (restrictedToast) {
       const timer = setTimeout(() => {
         setRestrictedToast(null);
-      }, 3500);
+      }, 6000);
       return () => clearTimeout(timer);
     }
   }, [restrictedToast]);
@@ -217,6 +218,7 @@ export const DocsPage: React.FC = () => {
   const folders = items.filter((i) => i.isFolder);
   const files = items.filter((i) => !i.isFolder);
 
+
   const handleOpenFolder = (folder: DriveItem) => {
     setSearchParams({ folderId: folder.id, folderName: folder.name });
     setBreadcrumbHistory((prev) => [...prev, { id: folder.id, name: folder.name }]);
@@ -284,6 +286,28 @@ export const DocsPage: React.FC = () => {
     });
   };
 
+  // Keyboard shortcut listener for Delete / Backspace
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Delete" || (e.key === "Backspace" && (e.metaKey || e.ctrlKey))) {
+        const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+        if (tag === "input" || tag === "textarea") return;
+
+        if (selectedIds.length > 0) {
+          e.preventDefault();
+          if (!canDelete) {
+            showDeleteRestricted();
+            return;
+          }
+          const selectedItems = files.filter((f) => selectedIds.includes(f.id));
+          handleInitiateTrash(selectedItems);
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedIds, files, canDelete]);
+
   const handleConfirmTrash = async () => {
     if (!confirmTrashModal || confirmTrashModal.items.length === 0) return;
     const itemsToTrash = confirmTrashModal.items;
@@ -326,6 +350,10 @@ export const DocsPage: React.FC = () => {
   };
 
   const handleUndo = async () => {
+    if (!canDelete) {
+      showDeleteRestricted();
+      return;
+    }
     if (!undoToast || undoToast.items.length === 0) return;
     const itemsToRestore = undoToast.items;
     const fileIds = itemsToRestore.map((i) => i.id);
@@ -742,6 +770,8 @@ export const DocsPage: React.FC = () => {
                         data-testid={`file-card-${file.id}`}
                         onClick={() => setPreviewDoc(file)}
                         className={`glass-card p-4 rounded-2xl flex flex-col justify-between h-36 transition-all cursor-pointer group hover:scale-[1.01] relative ${
+                          isMenuOpen ? "z-30" : "z-0"
+                        } ${
                           isSelected ? "border-sky-500 bg-sky-500/5" : "hover:border-sky-500/40"
                         }`}
                       >
@@ -1011,8 +1041,19 @@ export const DocsPage: React.FC = () => {
             <span className="text-white font-medium">{undoToast.message}</span>
           </div>
           <button
-            onClick={handleUndo}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 font-semibold border border-sky-500/30 transition active:scale-95"
+            onClick={() => {
+              if (!canDelete) {
+                showDeleteRestricted();
+                return;
+              }
+              handleUndo();
+            }}
+            aria-disabled={!canDelete}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-semibold border transition ${
+              canDelete
+                ? "bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border-sky-500/30 cursor-pointer active:scale-95"
+                : "bg-white/5 text-muted-foreground/40 border-white/5 opacity-50 cursor-not-allowed hover:bg-white/5"
+            }`}
           >
             <RotateCcw className="w-3.5 h-3.5" />
             <span>Undo</span>

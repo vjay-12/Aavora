@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useLock } from "../context/LockContext";
 import { useQuery } from "@tanstack/react-query";
@@ -23,7 +23,7 @@ import { UserAvatar } from "../components/common/UserAvatar";
 import { getUserFullName } from "../lib/user-format";
 
 export const MorePage: React.FC = () => {
-  const { user, logout } = useAuth();
+  const { user, isAdmin, logout } = useAuth();
   const {
     autoLockMinutes,
     updateAutoLockMinutes,
@@ -33,23 +33,31 @@ export const MorePage: React.FC = () => {
     setupLock,
   } = useLock();
 
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const driveConnectedParam = searchParams.get("admin_drive_connected") || searchParams.get("driveConnected");
   const driveErrorParam = searchParams.get("driveError");
   const errorParam = searchParams.get("error") || driveErrorParam;
   const msgParam = searchParams.get("msg");
 
-  const canDelete = canUserDelete(user?.role);
+  const canDelete = Boolean(isAdmin ?? user?.isAdmin);
   const [restrictedToast, setRestrictedToast] = useState<string | null>(msgParam || null);
 
   const sectionParam = searchParams.get("section");
   const [activeSection, setActiveSection] = useState<"bin" | "members" | "security" | "drive">(() => {
-    if (user?.role === "admin" && (driveConnectedParam || errorParam || driveErrorParam)) return "drive";
-    if (sectionParam === "bin" && canUserDelete(user?.role)) return "bin";
+    if (isAdmin && (driveConnectedParam || errorParam || driveErrorParam)) return "drive";
+    if (sectionParam === "bin" && canDelete) return "bin";
     if (sectionParam === "security") return "security";
-    if (sectionParam === "members" && user?.role === "admin") return "members";
-    return canUserDelete(user?.role) ? "bin" : "security";
+    if (sectionParam === "members" && isAdmin) return "members";
+    return canDelete ? "bin" : "security";
   });
+
+  // Redirect non-admins attempting to view bin to docs
+  React.useEffect(() => {
+    if (sectionParam === "bin" && !canDelete) {
+      navigate(`/docs?msg=${encodeURIComponent(DELETE_RESTRICTED_MESSAGE)}`, { replace: true });
+    }
+  }, [sectionParam, canDelete, navigate]);
 
   // Fetch Drive Health (Admin only)
   const { data: driveHealth, isLoading: isHealthLoading, refetch: refetchHealth } = useQuery({
@@ -104,6 +112,10 @@ export const MorePage: React.FC = () => {
 
   // Restore item from bin
   const handleRestore = async (item: any) => {
+    if (!canDelete) {
+      setRestrictedToast(DELETE_RESTRICTED_MESSAGE);
+      return;
+    }
     try {
       await fetch("/api/drive/restore", {
         method: "POST",
@@ -118,7 +130,7 @@ export const MorePage: React.FC = () => {
 
   // Permanent Delete (Admin only)
   const handlePermanentDelete = async () => {
-    if (!deleteConfirmItem || deleteInputText !== "DELETE") return;
+    if (!canDelete || !deleteConfirmItem || deleteInputText !== "DELETE") return;
     setIsDeleting(true);
     try {
       const res = await fetch("/api/drive/permanent-delete", {
