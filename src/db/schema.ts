@@ -56,9 +56,18 @@ export const stars = pgTable(
   })
 );
 
+// 4. Settings table (Key-value store for encrypted admin refresh token, etc.)
+export const settings = pgTable("settings", {
+  key: text("key").primaryKey(),
+  valueEncrypted: text("value_encrypted").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Activity = typeof activity.$inferSelect;
 export type NewActivity = typeof activity.$inferInsert;
 export type Star = typeof stars.$inferSelect;
 export type NewStar = typeof stars.$inferInsert;
+export type Setting = typeof settings.$inferSelect;
+export type NewSetting = typeof settings.$inferInsert;

@@ -1,6 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import { authenticateRequest } from "../_utils/auth.js";
-import { getEnv } from "../_utils/env.js";
+import {
+  getAdminAccessToken,
+  getVaultRootId,
+  AdminDriveError,
+  createDriveFolder,
+} from "../_utils/drive.js";
 import { json, error } from "../_utils/response.js";
 
 const DEFAULT_CATEGORIES = [
@@ -27,11 +32,20 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       return error(res, "Forbidden: Admin role required to seed default categories", 403);
     }
 
-    const env = getEnv();
-    const rootId = env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
+    const rootId = getVaultRootId();
 
-    if (!rootId) {
-      return error(res, "GOOGLE_DRIVE_ROOT_FOLDER_ID not configured", 500);
+    let adminToken: string;
+    try {
+      adminToken = await getAdminAccessToken();
+    } catch (err: any) {
+      if (err instanceof AdminDriveError || err.code === "ADMIN_DRIVE_NOT_CONNECTED") {
+        return json(
+          res,
+          { error: "Vault Google Drive is not connected.", code: "ADMIN_DRIVE_NOT_CONNECTED" },
+          503
+        );
+      }
+      throw err;
     }
 
     // 1. Fetch existing subfolders in root
@@ -45,61 +59,54 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     });
 
     const listRes = await fetch(`https://www.googleapis.com/drive/v3/files?${listParams.toString()}`, {
-      headers: { Authorization: `Bearer ${user.accessToken}` },
+      headers: { Authorization: `Bearer ${adminToken}` },
     });
 
     if (!listRes.ok) {
-      const errData = await listRes.json();
+      const errData = await listRes.json().catch(() => ({}));
       return error(res, errData.error?.message || "Failed to inspect root folder in Google Drive", listRes.status);
     }
 
     const listData = await listRes.json();
-    const existingFolders = new Map<string, string>(); // lowerName -> id
+    const existingFolders = new Map<string, string>();
     for (const f of listData.files || []) {
       existingFolders.set(f.name.toLowerCase().trim(), f.id);
     }
 
-    const created: Array<{ id: string; name: string }> = [];
+    // 2. Create missing categories
+    const created: Array<{ name: string; id: string }> = [];
     const skipped: string[] = [];
 
-    // 2. Create missing categories
-    for (const catName of DEFAULT_CATEGORIES) {
-      if (existingFolders.has(catName.toLowerCase())) {
-        skipped.push(catName);
+    for (const category of DEFAULT_CATEGORIES) {
+      const key = category.toLowerCase().trim();
+      if (existingFolders.has(key)) {
+        skipped.push(category);
         continue;
       }
 
-      const createRes = await fetch("https://www.googleapis.com/drive/v3/files?supportsAllDrives=true", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${user.accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: catName,
-          mimeType: "application/vnd.google-apps.folder",
-          parents: [rootId],
-        }),
+      const folder = await createDriveFolder(category, rootId, {
+        isVaultCategory: "true",
+        categoryName: category,
       });
 
-      if (!createRes.ok) {
-        const createErr = await createRes.json();
-        console.error(`[Seed Categories Error] Failed to create ${catName}:`, createErr);
-        continue;
-      }
-
-      const createdFolder = await createRes.json();
-      created.push({ id: createdFolder.id, name: createdFolder.name });
+      created.push({ name: category, id: folder.id });
     }
 
     return json(res, {
       success: true,
-      createdCount: created.length,
+      message: `Vault categories verified: ${created.length} created, ${skipped.length} already existed`,
       created,
       skipped,
     });
   } catch (err: any) {
-    console.error("[Seed Categories Exception]:", err);
+    if (err instanceof AdminDriveError || err.code === "ADMIN_DRIVE_NOT_CONNECTED") {
+      return json(
+        res,
+        { error: "Vault Google Drive is not connected.", code: "ADMIN_DRIVE_NOT_CONNECTED" },
+        503
+      );
+    }
+    console.error("[Seed Categories Error]:", err);
     return error(res, err.message || "Failed to seed default categories", 500);
   }
 }

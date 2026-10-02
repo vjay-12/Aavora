@@ -14,7 +14,6 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       "openid",
       "email",
       "profile",
-      "https://www.googleapis.com/auth/drive",
     ].join(" ");
 
     const state = Buffer.from(crypto.randomUUID()).toString("hex");
@@ -27,9 +26,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       response_type: "code",
       state,
       scope,
-      access_type: "offline",
-      prompt: "consent",
-      include_granted_scopes: "true",
+      prompt: "select_account",
     });
 
     const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;

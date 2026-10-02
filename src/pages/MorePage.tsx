@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useLock } from "../context/LockContext";
 import { useQuery } from "@tanstack/react-query";
@@ -29,7 +30,25 @@ export const MorePage: React.FC = () => {
     setupLock,
   } = useLock();
 
-  const [activeSection, setActiveSection] = useState<"bin" | "members" | "security">("bin");
+  const [searchParams] = useSearchParams();
+  const driveConnectedParam = searchParams.get("admin_drive_connected");
+  const errorParam = searchParams.get("error");
+  const msgParam = searchParams.get("msg");
+
+  const [activeSection, setActiveSection] = useState<"bin" | "members" | "security" | "drive">(
+    user?.role === "admin" && (driveConnectedParam || errorParam) ? "drive" : "bin"
+  );
+
+  // Fetch Drive Health (Admin only)
+  const { data: driveHealth, isLoading: isHealthLoading, refetch: refetchHealth } = useQuery({
+    queryKey: ["drive-health"],
+    queryFn: async () => {
+      const res = await fetch("/api/drive/health");
+      if (!res.ok) return null;
+      return res.json();
+    },
+    enabled: user?.role === "admin",
+  });
 
   // Admin Permanent Delete Modal State
   const [deleteConfirmItem, setDeleteConfirmItem] = useState<any | null>(null);
@@ -203,6 +222,18 @@ export const MorePage: React.FC = () => {
           >
             <Users className="w-4 h-4 text-sky-400" />
             <span>Members (Neon)</span>
+          </button>
+        )}
+
+        {user?.role === "admin" && (
+          <button
+            onClick={() => setActiveSection("drive")}
+            className={`flex items-center justify-center gap-2 flex-1 py-2.5 rounded-xl font-medium transition-colors ${
+              activeSection === "drive" ? "bg-white/10 text-white shadow-sm" : "text-muted-foreground hover:text-white"
+            }`}
+          >
+            <HardDrive className="w-4 h-4 text-emerald-400" />
+            <span>Connect Drive</span>
           </button>
         )}
 
@@ -513,6 +544,99 @@ export const MorePage: React.FC = () => {
               <LogOut className="w-4 h-4" />
               <span>Log Out of Aavora & Clear Session</span>
             </button>
+          </div>
+        </section>
+      )}
+
+      {/* SECTION 4: ADMIN DRIVE CONNECTION */}
+      {activeSection === "drive" && user?.role === "admin" && (
+        <section className="space-y-4 animate-fadeIn">
+          {driveConnectedParam === "true" && (
+            <div className="p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-3">
+              <Shield className="w-5 h-5 text-emerald-400 flex-shrink-0" />
+              <div>
+                <p className="font-semibold">Google Drive Connected Successfully!</p>
+                <p className="text-[11px] text-emerald-200/80">Admin refresh token is encrypted and stored in the database settings.</p>
+              </div>
+            </div>
+          )}
+
+          {errorParam && (
+            <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-3">
+              <AlertTriangle className="w-5 h-5 text-rose-400 flex-shrink-0" />
+              <div>
+                <p className="font-semibold">Connection Error: {errorParam}</p>
+                <p className="text-[11px] text-rose-200/80">{msgParam || "Failed to complete Google Drive authentication."}</p>
+              </div>
+            </div>
+          )}
+
+          <div className="glass-card p-6 rounded-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/15 text-emerald-400 flex items-center justify-center">
+                  <HardDrive className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-white">Admin Google Drive Connection</h2>
+                  <p className="text-xs text-muted-foreground">
+                    Connect the designated admin Google Drive account to store and sync family documents.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => refetchHealth()}
+                className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white"
+                title="Refresh Status"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 rounded-xl bg-black/30 border border-white/5 space-y-3">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">Connection Status</span>
+                {isHealthLoading ? (
+                  <span className="text-muted-foreground">Checking status...</span>
+                ) : driveHealth?.adminDriveConnected ? (
+                  <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 font-semibold text-[11px] border border-emerald-500/30">
+                    Connected
+                  </span>
+                ) : (
+                  <span className="px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400 font-semibold text-[11px] border border-amber-500/30">
+                    Not Connected
+                  </span>
+                )}
+              </div>
+
+              {driveHealth?.rootFolderName && (
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">Vault Root Folder</span>
+                  <span className="text-white font-medium">{driveHealth.rootFolderName}</span>
+                </div>
+              )}
+
+              {typeof driveHealth?.itemCount === "number" && (
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">Root Items Count</span>
+                  <span className="text-white font-medium">{driveHealth.itemCount} items</span>
+                </div>
+              )}
+            </div>
+
+            <div className="pt-2 flex flex-col sm:flex-row items-center gap-3">
+              <a
+                href="/api/admin/drive/connect"
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-white font-semibold text-xs shadow-lg shadow-sky-500/20 transition active:scale-95"
+              >
+                <HardDrive className="w-4 h-4" />
+                <span>{driveHealth?.adminDriveConnected ? "Reconnect Google Drive" : "Connect Google Drive"}</span>
+              </a>
+              <p className="text-[11px] text-muted-foreground">
+                Opens Google OAuth with <code>drive</code> scope. Only allowed for admin account.
+              </p>
+            </div>
           </div>
         </section>
       )}

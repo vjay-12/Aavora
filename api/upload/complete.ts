@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import { authenticateRequest } from "../_utils/auth.js";
+import { assertInsideVault } from "../_utils/drive.js";
 import { json, error, parseJsonBody } from "../_utils/response.js";
 import { db } from "../../src/db/index.js";
 import { activity } from "../../src/db/schema.js";
@@ -23,6 +24,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     if (!body.driveId || !body.name) {
       return error(res, "driveId and name are required", 400);
+    }
+
+    try {
+      await assertInsideVault(body.driveId);
+    } catch {
+      return error(res, "Forbidden: Uploaded file is outside the family vault", 403);
     }
 
     // Record upload in Neon activity table

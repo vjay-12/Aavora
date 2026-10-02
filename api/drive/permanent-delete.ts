@@ -47,6 +47,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     return json(res, { success: true });
   } catch (err: any) {
+    if (err.statusCode === 403 || err.status === 403) {
+      return error(res, "Forbidden: Item is outside the family vault", 403);
+    }
+    if (err.code === "ADMIN_DRIVE_NOT_CONNECTED") {
+      return json(res, { error: "Vault Google Drive is not connected.", code: "ADMIN_DRIVE_NOT_CONNECTED" }, 503);
+    }
     return error(res, err.message || "Failed to permanently delete item", 500);
   }
 }

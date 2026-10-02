@@ -15,6 +15,9 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       items: result.files || [],
     });
   } catch (err: any) {
+    if (err.code === "ADMIN_DRIVE_NOT_CONNECTED") {
+      return json(res, { error: "Vault Google Drive is not connected.", code: "ADMIN_DRIVE_NOT_CONNECTED" }, 503);
+    }
     return error(res, err.message || "Failed to list bin", 500);
   }
 }

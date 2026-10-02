@@ -2,7 +2,7 @@ import "dotenv/config";
 import { validateEnv, getEnv } from "../api/_utils/env";
 import { createSessionToken, verifySessionToken } from "../api/_utils/auth";
 import { db } from "../src/db";
-import { users, activity, stars } from "../src/db/schema";
+import { users, activity, stars, settings } from "../src/db/schema";
 import { eq, sql } from "drizzle-orm";
 
 async function runTests() {
@@ -76,9 +76,6 @@ async function runTests() {
       email: "family.member@example.com",
       name: "Family Member",
       role: "member" as const,
-      accessToken: "ya29.sample_google_token",
-      refreshToken: "mock_refresh_token_for_testing",
-      accessTokenExpiresAt: Date.now() + 3600000,
     };
 
     const token = await createSessionToken(samplePayload);
@@ -88,7 +85,7 @@ async function runTests() {
     assert(
       decrypted?.email === samplePayload.email &&
       decrypted?.role === samplePayload.role &&
-      decrypted?.accessToken === samplePayload.accessToken,
+      decrypted?.name === samplePayload.name,
       "verifySessionToken decrypts exact payload successfully"
     );
 
@@ -107,10 +104,12 @@ async function runTests() {
     const [{ userCount }] = await db.select({ userCount: sql<number>`count(*)::int` }).from(users);
     const [{ activityCount }] = await db.select({ activityCount: sql<number>`count(*)::int` }).from(activity);
     const [{ starsCount }] = await db.select({ starsCount: sql<number>`count(*)::int` }).from(stars);
+    const [{ settingsCount }] = await db.select({ settingsCount: sql<number>`count(*)::int` }).from(settings);
 
     assert(typeof userCount === "number", "users table exists and responds in Neon");
     assert(typeof activityCount === "number", "activity table exists and responds in Neon");
     assert(typeof starsCount === "number", "stars table exists and responds in Neon");
+    assert(typeof settingsCount === "number", "settings table exists and responds in Neon");
 
     // Check admin email is seeded
     const env = getEnv();

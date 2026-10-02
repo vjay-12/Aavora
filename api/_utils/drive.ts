@@ -1,31 +1,101 @@
+import { db } from "../../src/db/index.js";
+import { settings } from "../../src/db/schema.js";
+import { eq } from "drizzle-orm";
+import { decryptSecret } from "./crypto.js";
+import { getEnv } from "./env.js";
+
+export class AdminDriveError extends Error {
+  code: string;
+  constructor(message: string, code = "ADMIN_DRIVE_NOT_CONNECTED") {
+    super(message);
+    this.name = "AdminDriveError";
+    this.code = code;
+  }
+}
+
 interface GoogleTokenCache {
   accessToken: string;
   expiresAt: number;
 }
 
 let tokenCache: GoogleTokenCache | null = null;
+const verifiedFolderIds = new Map<string, number>();
+const VERIFIED_TTL_MS = 5 * 60 * 1000; // 5 minutes cache
 
-// Exchange Admin Refresh Token for short-lived Access Token
-export async function getAdminAccessToken(): Promise<string> {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const refreshToken = process.env.GOOGLE_ADMIN_REFRESH_TOKEN;
+export function invalidateAdminTokenCache() {
+  tokenCache = null;
+}
 
-  if (!clientId || !clientSecret || !refreshToken) {
-    throw new Error("Missing Google OAuth credentials or GOOGLE_ADMIN_REFRESH_TOKEN");
+export function invalidateVaultCache() {
+  verifiedFolderIds.clear();
+}
+
+/**
+ * Returns the Vault root folder ID.
+ * Never falls back to 'root' or 'me'.
+ */
+export function getVaultRootId(): string {
+  const env = getEnv();
+  const root = env.GOOGLE_DRIVE_ROOT_FOLDER_ID?.trim();
+  if (!root || root.toLowerCase() === "root") {
+    throw new Error("Missing or invalid GOOGLE_DRIVE_ROOT_FOLDER_ID configuration");
   }
+  return root;
+}
+
+/**
+ * Retrieves the admin refresh token from Neon settings table,
+ * falling back to GOOGLE_ADMIN_REFRESH_TOKEN env only if not set in DB.
+ */
+async function getStoredAdminRefreshToken(): Promise<string | null> {
+  try {
+    const [row] = await db
+      .select()
+      .from(settings)
+      .where(eq(settings.key, "admin_drive_refresh_token"))
+      .limit(1);
+
+    if (row?.valueEncrypted) {
+      return decryptSecret(row.valueEncrypted);
+    }
+  } catch (err) {
+    console.error("[Drive]: Failed to read admin token from settings table:", err);
+  }
+
+  const envToken = process.env.GOOGLE_ADMIN_REFRESH_TOKEN?.trim();
+  if (envToken) {
+    return envToken;
+  }
+
+  return null;
+}
+
+/**
+ * Exchanges admin refresh token for short-lived access token with in-memory caching.
+ * Throws AdminDriveError with code ADMIN_DRIVE_NOT_CONNECTED if token is missing or revoked.
+ */
+export async function getAdminAccessToken(): Promise<string> {
+  const env = getEnv();
 
   // Return cached token if valid (with 60-second buffer)
   if (tokenCache && tokenCache.expiresAt > Date.now() + 60000) {
     return tokenCache.accessToken;
   }
 
+  const refreshToken = await getStoredAdminRefreshToken();
+  if (!refreshToken) {
+    throw new AdminDriveError(
+      "Admin Google Drive is not connected. Please connect the Drive as admin.",
+      "ADMIN_DRIVE_NOT_CONNECTED"
+    );
+  }
+
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
+      client_id: env.GOOGLE_CLIENT_ID,
+      client_secret: env.GOOGLE_CLIENT_SECRET,
       refresh_token: refreshToken,
       grant_type: "refresh_token",
     }),
@@ -33,7 +103,11 @@ export async function getAdminAccessToken(): Promise<string> {
 
   const data = await res.json();
   if (!res.ok || !data.access_token) {
-    throw new Error(`Google OAuth token refresh failed: ${data.error_description || data.error}`);
+    tokenCache = null;
+    throw new AdminDriveError(
+      `Google Drive admin token is invalid or revoked (${data.error || "invalid_grant"}): ${data.error_description || "Token refresh failed"}`,
+      "ADMIN_DRIVE_NOT_CONNECTED"
+    );
   }
 
   tokenCache = {
@@ -42,6 +116,87 @@ export async function getAdminAccessToken(): Promise<string> {
   };
 
   return data.access_token;
+}
+
+/**
+ * Server-side helper that returns an authenticated Drive client context.
+ */
+export async function getAdminDrive() {
+  const token = await getAdminAccessToken();
+  return {
+    accessToken: token,
+    rootFolderId: getVaultRootId(),
+  };
+}
+
+/**
+ * Verifies that a folder or file ID is DRIVE_ROOT_FOLDER_ID or a descendant
+ * by walking the parents chain. Caches verified IDs for 5 minutes.
+ */
+export async function isInsideVault(id: string, token?: string): Promise<boolean> {
+  const rootId = getVaultRootId();
+  if (!id) return false;
+  if (id === rootId) return true;
+  if (id.toLowerCase() === "root" || id.toLowerCase() === "me") return false;
+
+  const cached = verifiedFolderIds.get(id);
+  if (cached && Date.now() - cached < VERIFIED_TTL_MS) {
+    return true;
+  }
+
+  const accessToken = token || (await getAdminAccessToken());
+  let currentId: string | undefined = id;
+  const visited = new Set<string>();
+  const chain: string[] = [id];
+
+  while (currentId && !visited.has(currentId)) {
+    visited.add(currentId);
+
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(currentId)}?fields=id,parents,trashed&supportsAllDrives=true`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }
+    );
+
+    if (!res.ok) {
+      return false;
+    }
+
+    const data = await res.json();
+    const parents: string[] = data.parents || [];
+
+    if (parents.includes(rootId)) {
+      const now = Date.now();
+      for (const item of chain) {
+        verifiedFolderIds.set(item, now);
+      }
+      return true;
+    }
+
+    if (parents.length === 0) {
+      return false;
+    }
+
+    currentId = parents[0];
+    chain.push(currentId);
+  }
+
+  return false;
+}
+
+/**
+ * Asserts that an item ID belongs to the vault root tree.
+ * Throws an error with statusCode = 403 if it is outside the tree.
+ */
+export async function assertInsideVault(id: string, token?: string): Promise<void> {
+  const ok = await isInsideVault(id, token);
+  if (!ok) {
+    const err: any = new Error(`Access denied: Item ${id} is not within the vault root.`);
+    err.statusCode = 403;
+    err.status = 403;
+    throw err;
+  }
 }
 
 export interface DriveItem {
@@ -61,49 +216,66 @@ export interface DriveItem {
   trashed?: boolean;
 }
 
-// Get root folder ID from environment or 'root'
-export function getRootFolderId(): string {
-  return process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || "root";
-}
-
-// List files and folders
+/**
+ * Lists files and folders under a folder in the vault.
+ * Defaults to DRIVE_ROOT_FOLDER_ID and verifies ancestry.
+ */
 export async function listDriveItems(
   folderId?: string,
   searchQuery?: string,
   trashed = false
-): Promise<{ files: DriveItem[]; nextPageToken?: string }> {
+): Promise<{ files: DriveItem[]; nextPageToken?: string; folderName?: string }> {
+  const targetFolder = folderId || getVaultRootId();
+  await assertInsideVault(targetFolder);
+
   const accessToken = await getAdminAccessToken();
-  const targetFolder = folderId || getRootFolderId();
 
   let q = `'${targetFolder}' in parents and trashed = ${trashed}`;
   if (searchQuery) {
     q = `name contains '${searchQuery.replace(/'/g, "\\'")}' and trashed = ${trashed}`;
   }
 
-  const params = new URLSearchParams({
-    q,
-    fields:
-      "nextPageToken, files(id, name, mimeType, size, modifiedTime, createdTime, owners, appProperties, thumbnailLink, iconLink, webViewLink, webContentLink, parents, trashed)",
-    pageSize: "100",
-    orderBy: "folder,name",
-    supportsAllDrives: "true",
-    includeItemsFromAllDrives: "true",
-  });
+  const allFiles: DriveItem[] = [];
+  let pageToken: string | undefined = undefined;
 
-  const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  do {
+    const params = new URLSearchParams({
+      q,
+      fields:
+        "nextPageToken, files(id, name, mimeType, size, modifiedTime, createdTime, owners, appProperties, thumbnailLink, iconLink, webViewLink, webContentLink, parents, trashed)",
+      pageSize: "100",
+      orderBy: "folder,name",
+      supportsAllDrives: "true",
+      includeItemsFromAllDrives: "true",
+    });
+    if (pageToken) {
+      params.set("pageToken", pageToken);
+    }
 
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data.error?.message || "Failed to list Google Drive files");
-  }
+    const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
 
-  return data;
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error?.message || "Failed to list Google Drive files");
+    }
+
+    if (Array.isArray(data.files)) {
+      allFiles.push(...data.files);
+    }
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+
+  return { files: allFiles };
 }
 
-// Get file metadata
+/**
+ * Fetches file metadata, asserting it is inside the vault.
+ */
 export async function getDriveFile(fileId: string): Promise<DriveItem> {
+  await assertInsideVault(fileId);
+
   const accessToken = await getAdminAccessToken();
   const params = new URLSearchParams({
     fields:
@@ -123,14 +295,18 @@ export async function getDriveFile(fileId: string): Promise<DriveItem> {
   return data;
 }
 
-// Create a new folder
+/**
+ * Creates a folder inside parentId (defaults to vault root), asserting parent is in vault.
+ */
 export async function createDriveFolder(
   name: string,
   parentId?: string,
   appProperties?: Record<string, string>
 ): Promise<DriveItem> {
+  const parent = parentId || getVaultRootId();
+  await assertInsideVault(parent);
+
   const accessToken = await getAdminAccessToken();
-  const parent = parentId || getRootFolderId();
 
   const body: Record<string, unknown> = {
     name,
@@ -153,11 +329,19 @@ export async function createDriveFolder(
 
   const data = await res.json();
   if (!res.ok) throw new Error(data.error?.message || "Failed to create folder");
+
+  // Cache new folder as verified
+  verifiedFolderIds.set(data.id, Date.now());
+
   return data;
 }
 
-// Rename file or folder
+/**
+ * Renames an item inside the vault.
+ */
 export async function renameDriveItem(fileId: string, newName: string): Promise<DriveItem> {
+  await assertInsideVault(fileId);
+
   const accessToken = await getAdminAccessToken();
   const res = await fetch(
     `https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`,
@@ -176,12 +360,18 @@ export async function renameDriveItem(fileId: string, newName: string): Promise<
   return data;
 }
 
-// Move file or folder
+/**
+ * Moves an item inside the vault (asserts file and both parents are inside the vault).
+ */
 export async function moveDriveItem(
   fileId: string,
   newParentId: string,
   oldParentId: string
 ): Promise<DriveItem> {
+  await assertInsideVault(fileId);
+  await assertInsideVault(newParentId);
+  await assertInsideVault(oldParentId);
+
   const accessToken = await getAdminAccessToken();
   const params = new URLSearchParams({
     addParents: newParentId,
@@ -203,8 +393,12 @@ export async function moveDriveItem(
   return data;
 }
 
-// Trash / Untrash file or folder
+/**
+ * Sets trashed status on a file inside the vault.
+ */
 export async function setDriveTrashed(fileId: string, trashed: boolean): Promise<DriveItem> {
+  await assertInsideVault(fileId);
+
   const accessToken = await getAdminAccessToken();
   const res = await fetch(
     `https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`,
@@ -223,8 +417,12 @@ export async function setDriveTrashed(fileId: string, trashed: boolean): Promise
   return data;
 }
 
-// Permanent delete (Admin only)
+/**
+ * Permanently deletes a file inside the vault.
+ */
 export async function deleteDriveItemPermanently(fileId: string): Promise<boolean> {
+  await assertInsideVault(fileId);
+
   const accessToken = await getAdminAccessToken();
   const res = await fetch(
     `https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`,
@@ -241,11 +439,15 @@ export async function deleteDriveItemPermanently(fileId: string): Promise<boolea
   return true;
 }
 
-// Update file metadata / appProperties (tags, notes)
+/**
+ * Updates appProperties (tags, notes) on an item inside the vault.
+ */
 export async function updateDriveAppProperties(
   fileId: string,
   appProperties: Record<string, string>
 ): Promise<DriveItem> {
+  await assertInsideVault(fileId);
+
   const accessToken = await getAdminAccessToken();
   const res = await fetch(
     `https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`,
@@ -264,7 +466,9 @@ export async function updateDriveAppProperties(
   return data;
 }
 
-// Create Resumable Upload Session (Direct upload from browser to Google Drive)
+/**
+ * Initiates resumable upload session in parentId (defaults to vault root).
+ */
 export async function createResumableUploadSession(
   name: string,
   mimeType: string,
@@ -272,8 +476,10 @@ export async function createResumableUploadSession(
   parentId?: string,
   appProperties?: Record<string, string>
 ): Promise<{ uploadUrl: string }> {
+  const parent = parentId || getVaultRootId();
+  await assertInsideVault(parent);
+
   const accessToken = await getAdminAccessToken();
-  const parent = parentId || getRootFolderId();
 
   const metadata: Record<string, unknown> = {
     name,
@@ -312,16 +518,20 @@ export async function createResumableUploadSession(
   return { uploadUrl };
 }
 
-// Drive Storage Quota and About info
-export async function getDriveStorageQuota(providedToken?: string): Promise<{
+/**
+ * Fetches admin's storage quota for vault storage meter.
+ * Handles missing limit for unlimited plans.
+ */
+export async function getDriveStorageQuota(): Promise<{
   limit?: string;
-  usage?: string;
+  usage: string;
   usageInDrive?: string;
   usageInDriveTrash?: string;
+  isUnlimited: boolean;
 }> {
-  const accessToken = providedToken || (await getAdminAccessToken());
+  const accessToken = await getAdminAccessToken();
   const res = await fetch(
-    "https://www.googleapis.com/drive/v3/about?fields=storageQuota,user",
+    "https://www.googleapis.com/drive/v3/about?fields=storageQuota",
     {
       headers: { Authorization: `Bearer ${accessToken}` },
     }
@@ -329,5 +539,15 @@ export async function getDriveStorageQuota(providedToken?: string): Promise<{
 
   const data = await res.json();
   if (!res.ok) throw new Error(data.error?.message || "Failed to fetch storage info");
-  return data.storageQuota || {};
+
+  const quota = data.storageQuota || {};
+  const isUnlimited = !quota.limit || quota.limit === "0" || quota.limit === "-1";
+
+  return {
+    limit: quota.limit,
+    usage: quota.usage || "0",
+    usageInDrive: quota.usageInDrive,
+    usageInDriveTrash: quota.usageInDriveTrash,
+    isUnlimited,
+  };
 }

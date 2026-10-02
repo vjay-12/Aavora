@@ -47,6 +47,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     return json(res, { uploadUrl });
   } catch (err: any) {
+    if (err.statusCode === 403 || err.status === 403) {
+      return error(res, "Forbidden: Upload target folder is outside the family vault", 403);
+    }
+    if (err.code === "ADMIN_DRIVE_NOT_CONNECTED") {
+      return json(res, { error: "Vault Google Drive is not connected.", code: "ADMIN_DRIVE_NOT_CONNECTED" }, 503);
+    }
     console.error("Resumable upload session error:", err);
     return error(res, err.message || "Failed to create upload session", 500);
   }

@@ -3,6 +3,8 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient } from "./lib/query-client";
 import { AuthProvider, useAuth } from "./context/AuthContext";
+import { LockProvider, useLock } from "./context/LockContext";
+import { LockScreen } from "./components/lock/LockScreen";
 import { LoginPage } from "./components/auth/LoginPage";
 import { AccessDeniedPage } from "./pages/AccessDeniedPage";
 import { AppLayout } from "./components/layout/AppLayout";
@@ -16,6 +18,7 @@ import { Shield } from "lucide-react";
 
 const AppRoutes: React.FC = () => {
   const { user, isLoading } = useAuth();
+  const { isLocked, hasDeviceLock } = useLock();
 
   if (isLoading) {
     return (
@@ -30,6 +33,11 @@ const AppRoutes: React.FC = () => {
         </p>
       </div>
     );
+  }
+
+  // Device Lock Screen (if PIN is configured and vault is currently locked)
+  if (user && hasDeviceLock && isLocked) {
+    return <LockScreen />;
   }
 
   return (
@@ -59,10 +67,12 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <BrowserRouter>
-          <PwaUpdatePrompt />
-          <AppRoutes />
-        </BrowserRouter>
+        <LockProvider>
+          <BrowserRouter>
+            <PwaUpdatePrompt />
+            <AppRoutes />
+          </BrowserRouter>
+        </LockProvider>
       </AuthProvider>
     </QueryClientProvider>
   );

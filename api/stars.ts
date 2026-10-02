@@ -4,7 +4,7 @@ import { json, error, parseJsonBody } from "./_utils/response.js";
 import { db } from "../src/db/index.js";
 import { stars } from "../src/db/schema.js";
 import { and, eq } from "drizzle-orm";
-import { getDriveFile } from "./_utils/drive.js";
+import { getDriveFile, assertInsideVault } from "./_utils/drive.js";
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   try {
@@ -45,6 +45,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     if (req.method === "POST") {
       const body = await parseJsonBody<{ driveId: string }>(req);
       if (!body.driveId) return error(res, "driveId is required", 400);
+
+      try {
+        await assertInsideVault(body.driveId);
+      } catch {
+        return error(res, "Forbidden: Item is outside the family vault", 403);
+      }
 
       await db
         .insert(stars)

@@ -45,6 +45,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     return json(res, { folder });
   } catch (err: any) {
+    if (err.statusCode === 403 || err.status === 403) {
+      return error(res, "Forbidden: Target folder is outside the family vault", 403);
+    }
+    if (err.code === "ADMIN_DRIVE_NOT_CONNECTED") {
+      return json(res, { error: "Vault Google Drive is not connected.", code: "ADMIN_DRIVE_NOT_CONNECTED" }, 503);
+    }
     console.error("Create folder error:", err);
     return error(res, err.message || "Failed to create folder", 500);
   }

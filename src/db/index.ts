@@ -9,4 +9,4 @@ const connectionString = getEnv().DATABASE_URL;
 const sql = neon(connectionString);
 
 export const db = drizzle(sql, { schema });
-export { schema };
+export { sql, schema };

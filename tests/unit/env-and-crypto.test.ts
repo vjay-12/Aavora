@@ -50,9 +50,6 @@ describe("Unit Tests: Auth Crypto & Session Tokens (jose AES-256-GCM)", () => {
     email: "test.admin@aavora.internal",
     name: "Admin Tester",
     role: "admin" as const,
-    accessToken: "ya29.test_token",
-    refreshToken: "mock_test_refresh_token",
-    accessTokenExpiresAt: Date.now() + 3600000,
   };
 
   it("creates encrypted JWE token with 5 compact parts", async () => {
@@ -68,7 +65,7 @@ describe("Unit Tests: Auth Crypto & Session Tokens (jose AES-256-GCM)", () => {
     expect(decrypted).not.toBeNull();
     expect(decrypted?.email).toBe(samplePayload.email);
     expect(decrypted?.role).toBe("admin");
-    expect(decrypted?.accessToken).toBe(samplePayload.accessToken);
+    expect(decrypted?.name).toBe(samplePayload.name);
   });
 
   it("returns null for tampered ciphertext", async () => {

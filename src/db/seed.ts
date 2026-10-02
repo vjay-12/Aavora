@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { getEnv } from "../../api/_utils/env.js";
-import { db } from "./index.js";
+import { db, sql } from "./index.js";
 import { users } from "./schema.js";
 import { eq } from "drizzle-orm";
 
@@ -9,7 +9,14 @@ export async function seedUsers() {
   const adminEmail = env.ADMIN_EMAIL.toLowerCase().trim();
   const allowedEmails = env.ALLOWED_EMAILS.map((e: string) => e.toLowerCase().trim());
 
-  console.log("[Seed]: Seeding users into Neon database...");
+  console.log("[Seed]: Ensuring schema and seeding users in Neon database...");
+  await sql`
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value_encrypted TEXT NOT NULL,
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL
+    );
+  `;
 
   // 1. Seed or update Admin
   const [existingAdmin] = await db

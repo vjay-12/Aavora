@@ -9,7 +9,7 @@ export const COOKIE_NAME = "aavora_session";
 
 function getSecretKey(): Uint8Array {
   const env = getEnv();
-  const rawSecret = env.SESSION_SECRET;
+  const rawSecret = (process.env.COOKIE_SECRET || env.SESSION_SECRET).trim();
   return new TextEncoder().encode(rawSecret.padEnd(32, "0").slice(0, 32));
 }
 
@@ -18,9 +18,6 @@ export interface SessionPayload {
   email: string;
   name: string;
   role: "admin" | "member";
-  accessToken?: string;
-  refreshToken?: string;
-  accessTokenExpiresAt?: number;
 }
 
 export interface AuthenticatedUser {
@@ -28,7 +25,6 @@ export interface AuthenticatedUser {
   email: string;
   name: string;
   role: "admin" | "member";
-  accessToken: string;
 }
 
 // Encrypt 30-day session cookie using AES-256-GCM via jose
@@ -70,11 +66,11 @@ export function setSessionCookie(res: ServerResponse, token: string, maxAgeDays 
   const cookie = `${COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${
     isProd ? "; Secure" : ""
   }`;
-  const existing = res.getHeader("Set-Cookie");
+  const existing = typeof res.getHeader === "function" ? res.getHeader("Set-Cookie") : null;
   if (existing) {
     const list = Array.isArray(existing) ? existing : [String(existing)];
     res.setHeader("Set-Cookie", [...list, cookie]);
-  } else {
+  } else if (typeof res.setHeader === "function") {
     res.setHeader("Set-Cookie", cookie);
   }
 }
@@ -85,51 +81,18 @@ export function clearSessionCookie(res: ServerResponse) {
   const cookie = `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${
     isProd ? "; Secure" : ""
   }`;
-  const existing = res.getHeader("Set-Cookie");
+  const existing = typeof res.getHeader === "function" ? res.getHeader("Set-Cookie") : null;
   if (existing) {
     const list = Array.isArray(existing) ? existing : [String(existing)];
     res.setHeader("Set-Cookie", [...list, cookie]);
-  } else {
+  } else if (typeof res.setHeader === "function") {
     res.setHeader("Set-Cookie", cookie);
   }
 }
 
 /**
- * Silently refreshes access token using Google OAuth if expired or near expiration (< 5 mins)
- */
-async function refreshGoogleAccessToken(
-  refreshToken: string
-): Promise<{ accessToken: string; expiresIn: number } | null> {
-  try {
-    const env = getEnv();
-    const res = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: env.GOOGLE_CLIENT_ID,
-        client_secret: env.GOOGLE_CLIENT_SECRET,
-        refresh_token: refreshToken,
-        grant_type: "refresh_token",
-      }),
-    });
-
-    const data = await res.json();
-    if (!res.ok || !data.access_token) {
-      return null;
-    }
-
-    return {
-      accessToken: data.access_token,
-      expiresIn: data.expires_in || 3600,
-    };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Authenticates request, verifies against Neon users table,
- * and automatically refreshes access token silently if needed.
+ * Authenticates request and verifies user exists in Neon users table and is active.
+ * Session stores strictly user identity (no Drive tokens).
  */
 export async function authenticateRequest(
   req: IncomingMessage,
@@ -142,7 +105,6 @@ export async function authenticateRequest(
   const session = await verifySessionToken(token);
   if (!session || !session.email) return null;
 
-  // 1. Verify user exists in Neon database and is active
   try {
     const [userRecord] = await db
       .select()
@@ -155,42 +117,11 @@ export async function authenticateRequest(
       return null;
     }
 
-    let currentAccessToken = session.accessToken || "";
-    const expiresAt = session.accessTokenExpiresAt || 0;
-    const now = Date.now();
-
-    // 2. Check if access token is expired or within 5 minutes of expiring
-    if (session.refreshToken && (!currentAccessToken || now + 5 * 60 * 1000 > expiresAt)) {
-      const refreshed = await refreshGoogleAccessToken(session.refreshToken);
-      if (refreshed) {
-        currentAccessToken = refreshed.accessToken;
-        const newExpiresAt = now + refreshed.expiresIn * 1000;
-
-        // Update encrypted cookie on the response
-        if (res) {
-          const updatedToken = await createSessionToken({
-            ...session,
-            accessToken: currentAccessToken,
-            accessTokenExpiresAt: newExpiresAt,
-          });
-          setSessionCookie(res, updatedToken);
-        }
-      } else if (now > expiresAt) {
-        // Refresh token revoked or invalid AND access token already expired
-        if (res) clearSessionCookie(res);
-        return null;
-      }
-    } else if (now > expiresAt && !session.refreshToken) {
-      if (res) clearSessionCookie(res);
-      return null;
-    }
-
     return {
       id: userRecord.id,
       email: userRecord.email,
       name: userRecord.name,
       role: userRecord.role as "admin" | "member",
-      accessToken: currentAccessToken,
     };
   } catch (err) {
     console.error("[Auth Error] Neon database verification error:", err);

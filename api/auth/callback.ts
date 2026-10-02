@@ -16,6 +16,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   const errorParam = url.searchParams.get("error");
 
   const cookies = parseCookies(req.headers.cookie);
+  const adminState = cookies["aavora_admin_oauth_state"];
+  if (adminState && adminState === state) {
+    const adminCallback = (await import("../admin/drive/callback.js")).default;
+    return adminCallback(req, res);
+  }
+
   const cookieState = cookies["aavora_oauth_state"];
 
   // Always clear oauth state cookie on callback
@@ -83,16 +89,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       return res.end();
     }
 
-    // 5. Store session and refresh token in 30-day encrypted cookie
-    const expiresInSec = tokenData.expires_in || 3600;
+    // 5. Store session in 30-day encrypted cookie (identity only: id, email, name, role)
     const sessionToken = await createSessionToken({
       id: userRecord.id,
       email: userRecord.email,
       name: userRecord.name || name,
       role: userRecord.role as "admin" | "member",
-      accessToken: tokenData.access_token,
-      refreshToken: tokenData.refresh_token || undefined,
-      accessTokenExpiresAt: Date.now() + expiresInSec * 1000,
     });
 
     setSessionCookie(res, sessionToken, 30);

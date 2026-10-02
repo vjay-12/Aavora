@@ -116,65 +116,67 @@ Executes 38 automated browser tests across both **Desktop (1440x900)** and **Mob
 
 ---
 
-## 4. Manual Verification Steps for Google Sign-in
+## 4. Admin-Owned Drive Architecture
 
-1. Open `http://localhost:5173` in your browser.
-2. If not logged in, you will see the **Aavora Login Screen** with the "Continue with Google" button.
-3. Click **"Continue with Google"**. You will be redirected to Google's OAuth consent screen:
-   - Requesting permissions to manage Google Drive files and view your email/profile.
-4. **Authorized Account Sign-in (`ADMIN_EMAIL` or `ALLOWED_EMAILS`):**
-   - Google redirects back to `http://localhost:5173/api/auth/callback`.
-   - The server validates your email against the Neon `users` table.
-   - A 30-day encrypted HttpOnly cookie is set.
-   - You are redirected to `/docs`, where you will see your Google Drive root folder cards and files with live breadcrumb navigation!
-5. **Unauthorized Account Sign-in:**
-   - The server rejects the login and redirects to `/access-denied`.
-   - The **Access Denied** screen displays your rejected email and a button to switch accounts.
+Aavora uses an **Admin-Owned Google Drive Architecture** to safeguard family documents and ensure members' personal Google Drives are never accessed:
 
----
+1. **User Login (`openid email profile` only):**
+   - Members and admins log in using standard Google identity scopes (`openid email profile`).
+   - No Google Drive scope is ever requested during member sign-in.
+   - The user's email is verified against the `users` table in Neon Postgres.
+   - The session cookie (`aavora_session`) contains strictly identity attributes (`id`, `email`, `name`, `role`), never any Google Drive tokens.
 
-## 5. Deployment Guide (Vercel & Neon)
+2. **Admin Drive Connection (One-Time Setup):**
+   - An admin signs in and navigates to **More** -> **Connect Drive**.
+   - The server initiates an offline Google OAuth flow with the `https://www.googleapis.com/auth/drive` scope (`access_type=offline`, `prompt=consent`).
+   - The callback confirms the authenticating account matches `ADMIN_EMAIL`.
+   - The refresh token is encrypted using AES-256-GCM (with a key derived from `SESSION_SECRET`) and saved securely into the Neon Postgres `settings` table (`key`, `value_encrypted`, `updated_at`).
+   - Optional fallback: `GOOGLE_ADMIN_REFRESH_TOKEN` environment variable.
 
-### Neon Postgres
-- Ensure your Neon project is hosted in the **Singapore (`aws-ap-southeast-1`)** region.
-- Use the **pooled connection string** (`-pooler`) for serverless connection reuse.
+3. **Server-Side Helper `getAdminDrive()`:**
+   - All serverless endpoints in `/api/drive/*` and `/api/upload/*` interact with Google Drive via `getAdminDrive()`.
+   - Access tokens are refreshed silently and cached in server memory.
+   - If the token is missing or revoked, endpoints return HTTP 503 `ADMIN_DRIVE_NOT_CONNECTED`.
+   - The frontend responds with an admin banner ("Reconnect Drive") or member message ("Vault is temporarily unavailable, contact the admin").
 
-### Vercel Deployment
-1. Set the function region in `vercel.json` to `sin1` (Singapore) for sub-50ms DB co-location:
-   ```json
-   {
-     "regions": ["sin1"]
-   }
-   ```
-2. Configure all environment variables from `.env` in the Vercel Project Settings:
-   - `DATABASE_URL`
-   - `GOOGLE_CLIENT_ID`
-   - `GOOGLE_CLIENT_SECRET`
-   - `GOOGLE_REDIRECT_URI` (update to `https://<your-vercel-domain>/api/auth/callback`)
-   - `GOOGLE_DRIVE_ROOT_FOLDER_ID`
-   - `ADMIN_EMAIL`
-   - `ALLOWED_EMAILS`
-   - `SESSION_SECRET`
-   - `APP_URL` (update to `https://<your-vercel-domain>`)
-3. In Google Cloud Console, add `https://<your-vercel-domain>/api/auth/callback` to Authorized Redirect URIs.
+4. **Strict Vault Boundary Security:**
+   - Directory listings default strictly to `GOOGLE_DRIVE_ROOT_FOLDER_ID`. Requests to `"root"`, `"me"`, or My Drive are blocked.
+   - Every file/folder access (list, download, create, rename, move, trash) walks the `parents` chain to verify it descends from `GOOGLE_DRIVE_ROOT_FOLDER_ID` (with a 5-minute memory cache) and rejects outside items with HTTP 403 Forbidden.
+
+5. **Quota & Dashboard:**
+   - The Home storage meter displays the admin vault's actual Google Drive quota (`about.get storageQuota`), labeled "Vault storage (admin Drive)" with support for unlimited Google Workspace plans.
+   - Category cards display folders directly under `GOOGLE_DRIVE_ROOT_FOLDER_ID` only.
 
 ---
 
-## 6. Architecture & Security Highlights
+## 5. Google Cloud Console Redirect URI Setup
+
+Ensure both redirect URIs are added to your **Authorized redirect URIs** in Google Cloud Console:
+- `http://localhost:5173/api/auth/callback` (User identity sign-in)
+- `http://localhost:5173/api/admin/drive/callback` (Admin Drive connection callback)
+
+For production on Vercel:
+- `https://<your-vercel-domain>/api/auth/callback`
+- `https://<your-vercel-domain>/api/admin/drive/callback`
+
+---
+
+## 6. First-Time Admin Connection Steps
+
+1. Start the app: `npm run vercel:dev` (or open your production Vercel URL).
+2. Sign in with the designated `ADMIN_EMAIL` via Google.
+3. Open the **More** tab in the navigation bar and select **Connect Drive**.
+4. Click **Connect Google Drive** and grant Drive permissions on the Google consent screen.
+5. You will be redirected back to the Home dashboard with `admin_drive_connected=true`.
+6. Confirm the Home page displays **"Vault storage (admin Drive)"** with live quota and your vault root folders.
+
+---
+
+## 7. Architecture & Security Highlights
 
 - **Zero-Knowledge Bundle:** Build output (`dist/`) is strictly audited against secret leaks. No environment variables or credentials appear in client assets.
 - **Serverless Session Security:** Session tokens are encrypted JWEs (`A256GCM`) signed and decrypted exclusively server-side using `jose`.
-- **Silent Refresh:** When an access token expires (1 hour), `/api` functions automatically use the stored Google refresh token to fetch a new access token and seamlessly update the encrypted cookie.
-- **Hierarchical Drive Isolation:** Every request to `/api/drive/list` traverses the folder tree up to `GOOGLE_DRIVE_ROOT_FOLDER_ID`. Any attempt to access a folder outside the designated family vault is rejected with HTTP 403.
-- **Stale-While-Revalidate PWA:** Directory listings are instantly hydrated from IndexedDB cache on boot/reload and revalidated in the background.
-
----
-
-## 7. Next Phases Roadmap (Phases 3+)
-
-- **File Uploads:** Resumable multipart upload directly to Google Drive via Admin token with progress tracking.
-- **Trash & Restore:** Soft-delete move to Drive Bin with undo toast notification and admin-only permanent purge.
-- **Activity Audit Trail:** Real-time logging of document views, downloads, stars, and deletions with cursor-based pagination.
-- **Starred Documents:** Fast bookmarking synced to Neon Postgres `stars` table.
-- **App Lock Screen:** Local PIN protection (PBKDF2) and WebAuthn biometric unlock (fingerprint, Face ID, Windows Hello).
-- **Offline Document Encryption:** Web Crypto AES-GCM encrypted local storage for offline document viewing.
+- **Silent Refresh:** When an access token expires (1 hour), `getAdminAccessToken()` automatically uses the stored admin refresh token to fetch a new token and cache it in memory.
+- **Hierarchical Drive Isolation:** Every request to `/api/drive/*` traverses the folder tree up to `GOOGLE_DRIVE_ROOT_FOLDER_ID`. Any attempt to access a folder outside the designated family vault is rejected with HTTP 403.
+- **Device Security:** Per-device PIN (PBKDF2) and WebAuthn biometric unlock (fingerprint, Face ID, Windows Hello) with auto-lock timer stored only in browser IndexedDB.
+- **Offline Document Encryption:** Local documents encrypted with AES-256-GCM via Web Crypto API.

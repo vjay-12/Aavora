@@ -42,6 +42,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const arrayBuf = await driveRes.arrayBuffer();
     res.end(Buffer.from(arrayBuf));
   } catch (err: any) {
+    if (err.statusCode === 403 || err.status === 403) {
+      return error(res, "Forbidden: Requested file is outside the family vault", 403);
+    }
+    if (err.code === "ADMIN_DRIVE_NOT_CONNECTED") {
+      return error(res, "Vault Google Drive is not connected.", 503);
+    }
     return error(res, err.message || "Download failed", 500);
   }
 }
