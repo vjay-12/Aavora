@@ -10,6 +10,7 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "db:push": "drizzle-kit push",
+    "db:seed": "tsx src/db/seed.ts",
     "test": "vitest run && tsx scripts/test-all.ts",
     "test:unit": "vitest run",
     "test:integration": "tsx scripts/test-all.ts",
