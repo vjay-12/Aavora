@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { useLock } from "../../context/LockContext";
 import { useAuth } from "../../context/AuthContext";
 import { Shield, Fingerprint, Delete, AlertCircle, KeyRound } from "lucide-react";
+import { getUserGivenName } from "../../lib/user-format";
 
 export const LockScreen: React.FC = () => {
   const { unlockWithPin, unlockWithBiometric, isBiometricRegisteredState } = useLock();
@@ -82,7 +83,7 @@ export const LockScreen: React.FC = () => {
           Aavora Vault
         </h1>
         <p className="text-sm text-muted-foreground mb-6">
-          {user?.name ? `Welcome back, ${user.name}` : "Enter device PIN to unlock"}
+          {user ? `Welcome back, ${getUserGivenName(user)}` : "Enter device PIN to unlock"}
         </p>
 
         {/* PIN Dots Display */}

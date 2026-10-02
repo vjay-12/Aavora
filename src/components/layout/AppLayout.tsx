@@ -10,6 +10,8 @@ import {
   Shield,
   LogOut,
 } from "lucide-react";
+import { UserAvatar } from "../common/UserAvatar";
+import { getUserFullName } from "../../lib/user-format";
 
 export const AppLayout: React.FC = () => {
   const { user, logout } = useAuth();
@@ -78,11 +80,14 @@ export const AppLayout: React.FC = () => {
         <div className="space-y-3 pt-4 border-t border-white/5">
           <div className="flex items-center justify-between p-2 rounded-xl bg-white/5 border border-white/5">
             <div className="flex items-center gap-2.5 overflow-hidden">
-              <div className="w-8 h-8 rounded-full bg-sky-500/20 text-sky-300 flex items-center justify-center text-xs font-bold flex-shrink-0">
-                {user?.name?.slice(0, 1) || "U"}
-              </div>
+              <UserAvatar
+                name={user?.name}
+                email={user?.email}
+                picture={user?.picture}
+                size="sm"
+              />
               <div className="overflow-hidden text-left">
-                <div className="text-xs font-medium text-white truncate">{user?.name}</div>
+                <div className="text-xs font-medium text-white truncate">{getUserFullName(user)}</div>
                 <div className="text-[10px] text-muted-foreground truncate font-mono uppercase">
                   {user?.role}
                 </div>
@@ -116,6 +121,12 @@ export const AppLayout: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2">
+            <UserAvatar
+              name={user?.name}
+              email={user?.email}
+              picture={user?.picture}
+              size="xs"
+            />
             <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-sky-500/10 text-sky-300 border border-sky-500/20">
               {user?.role}
             </span>

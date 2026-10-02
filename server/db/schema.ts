@@ -5,8 +5,10 @@ export const users = pgTable("users", {
   id: serial("id").primaryKey(),
   email: text("email").notNull().unique(),
   name: text("name").notNull(),
+  givenName: text("given_name"),
   picture: text("picture"),
   role: text("role", { enum: ["admin", "member"] }).notNull().default("member"),
+  nameLocked: boolean("name_locked").notNull().default(false),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });

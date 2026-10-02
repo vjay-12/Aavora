@@ -19,6 +19,8 @@ import {
   HardDrive,
 } from "lucide-react";
 import { canUserDelete, DELETE_RESTRICTED_MESSAGE } from "../config/features";
+import { UserAvatar } from "../components/common/UserAvatar";
+import { getUserFullName } from "../lib/user-format";
 
 export const MorePage: React.FC = () => {
   const { user, logout } = useAuth();
@@ -393,12 +395,15 @@ export const MorePage: React.FC = () => {
                   className="glass-card p-3.5 rounded-2xl flex items-center justify-between gap-4"
                 >
                   <div className="flex items-center gap-3 overflow-hidden">
-                    <div className="w-9 h-9 rounded-full bg-sky-500/20 text-sky-300 flex items-center justify-center font-bold text-xs flex-shrink-0">
-                      {m.name.slice(0, 1)}
-                    </div>
+                    <UserAvatar
+                      name={m.name}
+                      email={m.email}
+                      picture={m.picture}
+                      size="md"
+                    />
                     <div className="overflow-hidden">
                       <div className="flex items-center gap-2">
-                        <span className="text-xs font-semibold text-white truncate">{m.name}</span>
+                        <span className="text-xs font-semibold text-white truncate">{getUserFullName(m)}</span>
                         <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-white/10 text-muted-foreground">
                           {m.role}
                         </span>

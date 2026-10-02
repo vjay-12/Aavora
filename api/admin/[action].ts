@@ -143,6 +143,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
           email: string;
           name: string;
           role?: "admin" | "member";
+          nameLocked?: boolean;
         }>(req);
 
         if (!body.email || !body.name) {
@@ -160,12 +161,15 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
           return error(res, "A user with this email already exists", 409);
         }
 
+        const nameTrimmed = body.name.trim();
         const [newUser] = await db
           .insert(users)
           .values({
             email,
-            name: body.name.trim(),
+            name: nameTrimmed,
+            givenName: nameTrimmed.split(/\s+/)[0],
             role: body.role || "member",
+            nameLocked: body.nameLocked ?? true,
             active: true,
           })
           .returning();
@@ -176,6 +180,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       if (method === "PATCH") {
         const body = await parseJsonBody<{
           id: number;
+          name?: string;
+          nameLocked?: boolean;
           active?: boolean;
           role?: "admin" | "member";
         }>(req);
@@ -189,6 +195,14 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         const updateData: Record<string, any> = {};
         if (typeof body.active === "boolean") updateData.active = body.active;
         if (body.role) updateData.role = body.role;
+        if (body.name !== undefined) {
+          const trimmed = body.name.trim();
+          updateData.name = trimmed;
+          updateData.givenName = trimmed.split(/\s+/)[0];
+          updateData.nameLocked = body.nameLocked ?? true;
+        } else if (typeof body.nameLocked === "boolean") {
+          updateData.nameLocked = body.nameLocked;
+        }
 
         const [updated] = await db
           .update(users)

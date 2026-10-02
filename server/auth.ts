@@ -20,6 +20,8 @@ export interface SessionPayload {
   email: string;
   name: string;
   role: "admin" | "member";
+  givenName?: string;
+  picture?: string;
 }
 
 export interface AuthenticatedUser {
@@ -27,6 +29,8 @@ export interface AuthenticatedUser {
   email: string;
   name: string;
   role: "admin" | "member";
+  givenName?: string;
+  picture?: string;
 }
 
 // Encrypt 30-day session cookie using AES-256-GCM via jose
@@ -201,6 +205,8 @@ export async function authenticateRequest(
       email: userRecord.email,
       name: userRecord.name,
       role: userRecord.role as "admin" | "member",
+      givenName: userRecord.givenName || undefined,
+      picture: userRecord.picture || undefined,
     };
   } catch (err) {
     console.error("[Auth Error] Neon database verification error:", err);

@@ -41,8 +41,19 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const records = hasMore ? items.slice(0, limit) : items;
     const nextCursor = hasMore ? records[records.length - 1].createdAt.toISOString() : null;
 
+    // Never return other users' emails to non-admin clients
+    const sanitizedRecords = records.map((record) => {
+      if (session.role === "admin" || record.userId.toLowerCase() === session.email.toLowerCase()) {
+        return record;
+      }
+      return {
+        ...record,
+        userId: "",
+      };
+    });
+
     return json(res, {
-      items: records,
+      items: sanitizedRecords,
       nextCursor,
       hasMore,
     });

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { formatBytes, formatDate } from "../../lib/utils";
+import { getUserFullName } from "../../lib/user-format";
 import {
   saveFileOffline,
   removeOfflineFile,
@@ -109,8 +110,12 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
-  const uploadedBy =
+  const rawUploadedBy =
     item.appProperties?.uploadedByName || item.appProperties?.uploadedBy || "Vault Admin";
+  const uploadedBy = getUserFullName({
+    name: item.appProperties?.uploadedByName,
+    email: item.appProperties?.uploadedByEmail || item.appProperties?.uploadedBy || rawUploadedBy,
+  });
   const tags = item.appProperties?.tags ? item.appProperties.tags.split(",") : [];
   const notes = item.appProperties?.notes || "";
 

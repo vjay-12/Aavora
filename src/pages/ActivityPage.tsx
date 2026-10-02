@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { formatDate } from "../lib/utils";
+import { getUserFullName } from "../lib/user-format";
 import {
   Activity as ActivityIcon,
   Upload,
@@ -192,14 +193,18 @@ export const ActivityPage: React.FC = () => {
                         <div className="overflow-hidden">
                           <p className="text-xs font-medium text-white truncate">
                             <span className="font-semibold text-sky-400">
-                              {act.userName || act.userId.split("@")[0]}
+                              {getUserFullName({ name: act.userName, email: act.userId })}
                             </span>{" "}
                             {badge.label.toLowerCase()}{" "}
                             <span className="font-semibold text-white">&ldquo;{act.name}&rdquo;</span>
                           </p>
                           <div className="flex items-center gap-2 text-[11px] text-muted-foreground mt-0.5">
-                            <span>{act.userId}</span>
-                            <span>•</span>
+                            {act.userId && (
+                              <>
+                                <span>{act.userId}</span>
+                                <span>•</span>
+                              </>
+                            )}
                             <span>{formatDate(act.createdAt)}</span>
                           </div>
                         </div>

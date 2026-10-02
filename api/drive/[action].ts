@@ -460,6 +460,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       const appProperties: Record<string, string> = {};
       if (body.tags && body.tags.length > 0) appProperties.tags = JSON.stringify(body.tags);
       if (body.notes) appProperties.notes = body.notes;
+      if (session.name) appProperties.uploadedByName = session.name;
+      if (session.email) appProperties.uploadedByEmail = session.email;
 
       // Forward client Origin header (or referer origin) to Google Drive
       let originHeader = (req.headers.origin || "").trim();

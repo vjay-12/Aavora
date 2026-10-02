@@ -18,6 +18,13 @@ export async function seedUsers() {
     );
   `;
 
+  await sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS given_name TEXT;
+  `;
+  await sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS name_locked BOOLEAN NOT NULL DEFAULT false;
+  `;
+
   // 1. Seed or update Admin
   const [existingAdmin] = await db
     .select()

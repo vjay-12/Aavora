@@ -13,7 +13,7 @@ import {
   verifyOAuthState,
   OAUTH_STATE_COOKIE,
 } from "../../server/auth.js";
-import { handleAdminDriveConnectCallback } from "../../server/drive.js";
+import { handleAdminDriveConnectCallback, getAdminAccessToken } from "../../server/drive.js";
 import { checkRateLimit } from "../../server/rate-limit.js";
 import { json, error } from "../../server/response.js";
 import { decodeJwt } from "jose";
@@ -140,30 +140,43 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         return res.end();
       }
 
-      // Read verified email from ID token first
+      // Read verified email, name, given_name, picture from ID token first
       let email = "";
-      let name = "";
+      let googleName = "";
+      let googleGivenName = "";
+      let googlePicture = "";
+
       if (tokenData.id_token) {
         try {
           const claims = decodeJwt(tokenData.id_token);
           if (claims.email && (claims.email_verified === true || claims.email_verified === "true")) {
             email = String(claims.email).toLowerCase().trim();
-            name = (claims.name as string) || email.split("@")[0];
+            googleName = typeof claims.name === "string" ? claims.name.trim() : "";
+            googleGivenName = typeof claims.given_name === "string" ? claims.given_name.trim() : "";
+            googlePicture = typeof claims.picture === "string" ? claims.picture.trim() : "";
           }
         } catch (err) {
           console.error("[OAuth] Failed to decode id_token:", err);
         }
       }
 
-      // Fallback to Google User Profile endpoint if needed
-      if (!email && tokenData.access_token) {
-        const profileRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-          headers: { Authorization: `Bearer ${tokenData.access_token}` },
-        });
-        const profile = await profileRes.json();
-        if (profile.email) {
-          email = profile.email.toLowerCase().trim();
-          name = profile.name || email.split("@")[0];
+      // If userinfo endpoint has extra profile details or if email not found, fetch userinfo
+      if (tokenData.access_token && (!email || !googleName || !googlePicture)) {
+        try {
+          const profileRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+            headers: { Authorization: `Bearer ${tokenData.access_token}` },
+          });
+          if (profileRes.ok) {
+            const profile = await profileRes.json();
+            if (profile.email && !email) {
+              email = profile.email.toLowerCase().trim();
+            }
+            if (profile.name && !googleName) googleName = profile.name.trim();
+            if (profile.given_name && !googleGivenName) googleGivenName = profile.given_name.trim();
+            if (profile.picture && !googlePicture) googlePicture = profile.picture.trim();
+          }
+        } catch (profileErr) {
+          console.error("[OAuth] Failed to fetch userinfo:", profileErr);
         }
       }
 
@@ -186,12 +199,57 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         return res.end();
       }
 
-      // Store session in 30-day encrypted cookie (identity only: id, email, name, role)
+      // Update name and picture from Google according to display & lock rules:
+      // Don't overwrite if manual name is locked (nameLocked), unless name is empty or default email prefix.
+      const emailPrefix = email.split("@")[0].toLowerCase();
+      const currentNameClean = (userRecord.name || "").toLowerCase().replace(/[._]/g, " ").trim();
+      const isDefaultEmailPrefix =
+        !userRecord.name ||
+        currentNameClean === emailPrefix ||
+        currentNameClean === emailPrefix.replace(/[._]/g, " ");
+
+      const canUpdateName = !userRecord.nameLocked || isDefaultEmailPrefix;
+
+      let finalName = userRecord.name;
+      if (googleName && canUpdateName) {
+        finalName = googleName;
+      }
+
+      let finalGivenName = userRecord.givenName;
+      if (googleGivenName && canUpdateName) {
+        finalGivenName = googleGivenName;
+      } else if (!finalGivenName && finalName) {
+        finalGivenName = finalName.split(/\s+/)[0];
+      }
+
+      let finalPicture = userRecord.picture;
+      if (googlePicture) {
+        finalPicture = googlePicture;
+      }
+
+      if (
+        finalName !== userRecord.name ||
+        finalGivenName !== userRecord.givenName ||
+        finalPicture !== userRecord.picture
+      ) {
+        await db
+          .update(users)
+          .set({
+            name: finalName,
+            givenName: finalGivenName,
+            picture: finalPicture,
+          })
+          .where(eq(users.id, userRecord.id));
+      }
+
+      // Store session in 30-day encrypted cookie
       const sessionToken = await createSessionToken({
         id: userRecord.id,
         email: userRecord.email,
-        name: userRecord.name || name,
+        name: finalName,
         role: userRecord.role as "admin" | "member",
+        givenName: finalGivenName || undefined,
+        picture: finalPicture || undefined,
       });
 
       setSessionCookie(res, sessionToken, 30);
@@ -213,13 +271,82 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     return json(res, { ok: true, message: "Logged out successfully" });
   }
 
-  // 4. GET /api/auth/me
+  // 4. GET /api/auth/me (or /api/me)
   if (action === "me") {
-    const user = await authenticateRequest(req, res);
+    let user = await authenticateRequest(req, res);
     if (!user) {
       return error(res, "Unauthorized", 401);
     }
-    return json(res, { user });
+
+    // One-time admin backfill: refreshes admin name and picture from Google userinfo if missing or default prefix
+    if (user.role === "admin") {
+      const emailPrefix = user.email.split("@")[0].toLowerCase();
+      const currentNameClean = (user.name || "").toLowerCase().replace(/[._]/g, " ").trim();
+      const isDefaultPrefix =
+        !user.name ||
+        currentNameClean === emailPrefix ||
+        currentNameClean === emailPrefix.replace(/[._]/g, " ");
+
+      if (!user.picture || !user.givenName || isDefaultPrefix) {
+        try {
+          const adminAccessToken = await getAdminAccessToken().catch(() => null);
+          if (adminAccessToken) {
+            const profileRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+              headers: { Authorization: `Bearer ${adminAccessToken}` },
+            });
+            if (profileRes.ok) {
+              const profile = await profileRes.json();
+              const [dbUser] = await db.select().from(users).where(eq(users.id, user.id)).limit(1);
+              if (dbUser && (!dbUser.nameLocked || isDefaultPrefix)) {
+                const newName = (profile.name && (!dbUser.nameLocked || isDefaultPrefix)) ? profile.name.trim() : dbUser.name;
+                const newGivenName = profile.given_name ? profile.given_name.trim() : (newName ? newName.split(/\s+/)[0] : dbUser.givenName);
+                const newPicture = profile.picture ? profile.picture.trim() : dbUser.picture;
+
+                await db
+                  .update(users)
+                  .set({
+                    name: newName,
+                    givenName: newGivenName,
+                    picture: newPicture,
+                  })
+                  .where(eq(users.id, user.id));
+
+                user = {
+                  ...user,
+                  name: newName,
+                  givenName: newGivenName || undefined,
+                  picture: newPicture || undefined,
+                };
+
+                // Re-issue session cookie with updated credentials
+                const refreshedToken = await createSessionToken({
+                  id: user.id,
+                  email: user.email,
+                  name: user.name,
+                  role: user.role,
+                  givenName: user.givenName,
+                  picture: user.picture,
+                });
+                setSessionCookie(res, refreshedToken, 30);
+              }
+            }
+          }
+        } catch (backfillErr) {
+          console.error("[Me Backfill Error]:", backfillErr);
+        }
+      }
+    }
+
+    return json(res, {
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        givenName: user.givenName,
+        picture: user.picture,
+      },
+    });
   }
 
   return error(res, `Unknown auth action: ${action}`, 404);

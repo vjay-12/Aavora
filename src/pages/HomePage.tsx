@@ -4,6 +4,7 @@ import { useAuth } from "../context/AuthContext";
 import { useQuery } from "@tanstack/react-query";
 import { getRecentlyViewed, RecentItem } from "../lib/recently-viewed";
 import { formatBytes, formatDate } from "../lib/utils";
+import { getGreeting } from "../lib/user-format";
 import {
   Folder,
   FileText,
@@ -179,7 +180,7 @@ export const HomePage: React.FC = () => {
             <span>Vault Encrypted & Synced</span>
           </div>
           <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight text-white font-['Outfit']">
-            Good day, {user?.name?.split(" ")[0] || "User"}
+            {getGreeting(user)}
           </h1>
           <p className="text-xs md:text-sm text-muted-foreground mt-0.5">
             Your family documents are safe and accessible.
