@@ -93,14 +93,55 @@ test.describe("Edge Cases & Error Resilience", () => {
     await page.goto("/docs");
     await page.waitForLoadState("networkidle");
 
-    // Friendly error banner displayed
-    await expect(page.locator("text=Failed to load Google Drive files")).toBeVisible({ timeout: 15000 });
+    // Friendly error card displayed with Retry button
+    await expect(page.locator("text=Google Drive Error")).toBeVisible({ timeout: 15000 });
     await expect(
       page.locator("text=Google Drive service temporarily overloaded")
     ).toBeVisible({ timeout: 15000 });
+    await expect(page.locator("button:has-text('Retry Request')")).toBeVisible();
 
     // Verify UI frame did not crash
     await expect(page.locator("text=Vault Root")).toBeVisible({ timeout: 15000 });
+  });
+
+  test("Drive API 403 Forbidden shows clear access denied error and retry button", async ({ page }) => {
+    await page.route("**/api/drive/list*", (route) => {
+      return route.fulfill({
+        status: 403,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: "Access denied to Google Drive folder. Please share the folder with this account.",
+        }),
+      });
+    });
+
+    await page.goto("/docs");
+    await page.waitForLoadState("networkidle");
+
+    await expect(page.locator("text=Google Drive Error")).toBeVisible({ timeout: 15000 });
+    await expect(page.locator("text=Access denied to Google Drive folder")).toBeVisible({ timeout: 15000 });
+    await expect(page.locator("button:has-text('Retry Request')")).toBeVisible();
+  });
+
+  test("Root folder empty array shows empty state and Create Default Categories action", async ({ page }) => {
+    await page.route("**/api/drive/list*", (route) => {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          items: [],
+          files: [],
+          currentFolderId: "root-123",
+          rootFolderId: "root-123",
+        }),
+      });
+    });
+
+    await page.goto("/docs");
+    await page.waitForLoadState("networkidle");
+
+    await expect(page.locator("text=This folder is empty")).toBeVisible({ timeout: 15000 });
+    await expect(page.locator("button:has-text('Create Default Categories')")).toBeVisible({ timeout: 15000 });
   });
 
   test("Folder with 200+ items renders efficiently without freeze", async ({

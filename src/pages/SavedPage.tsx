@@ -221,6 +221,3 @@ export const SavedPage: React.FC = () => {
   );
 };
 
-function BookmarkIcon(props: any) {
-  return <Star {...props} />;
-}

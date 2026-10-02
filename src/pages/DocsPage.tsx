@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { useAuth } from "../context/AuthContext";
 import { formatBytes, formatDate } from "../lib/utils";
 import {
   Folder,
@@ -14,6 +15,9 @@ import {
   FileVideo,
   FileAudio,
   ArrowLeft,
+  AlertCircle,
+  RefreshCw,
+  FolderPlus,
 } from "lucide-react";
 
 interface DriveItem {
@@ -28,9 +32,12 @@ interface DriveItem {
 }
 
 export const DocsPage: React.FC = () => {
+  const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const folderId = searchParams.get("folderId") || undefined;
   const folderName = searchParams.get("folderName") || "Vault Root";
+  const [isSeeding, setIsSeeding] = useState(false);
+  const [seedMessage, setSeedMessage] = useState<string | null>(null);
 
   // Breadcrumb path history
   const [breadcrumbHistory, setBreadcrumbHistory] = useState<Array<{ id?: string; name: string }>>(
@@ -38,7 +45,7 @@ export const DocsPage: React.FC = () => {
   );
 
   // Fetch drive items with TanStack Query (stale-while-revalidate)
-  const { data, isLoading, isError, error } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["drive-list", folderId],
     queryFn: async () => {
       const url = new URL("/api/drive/list", window.location.origin);
@@ -53,6 +60,22 @@ export const DocsPage: React.FC = () => {
     },
     staleTime: 0, // Stale-while-revalidate: display cache immediately, revalidate in background
   });
+
+  const handleSeedCategories = async () => {
+    setIsSeeding(true);
+    setSeedMessage(null);
+    try {
+      const res = await fetch("/api/drive/seed-categories", { method: "POST" });
+      const resData = await res.json();
+      if (!res.ok) throw new Error(resData.error || "Failed to seed default categories");
+      setSeedMessage(`Successfully created ${resData.createdCount} default categories!`);
+      refetch();
+    } catch (err: any) {
+      setSeedMessage(`Error: ${err.message}`);
+    } finally {
+      setIsSeeding(false);
+    }
+  };
 
   const items: DriveItem[] = data?.items || [];
   const isRoot = !folderId || folderId === data?.rootFolderId;
@@ -154,17 +177,67 @@ export const DocsPage: React.FC = () => {
           ))}
         </div>
       ) : isError ? (
-        <div className="p-8 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs text-center space-y-2">
-          <p className="font-semibold">Failed to load Google Drive files</p>
-          <p className="text-muted-foreground">{(error as any)?.message}</p>
+        <div className="p-8 rounded-3xl bg-rose-500/10 border border-rose-500/20 text-center space-y-4 max-w-lg mx-auto">
+          <div className="w-12 h-12 rounded-2xl bg-rose-500/20 text-rose-400 flex items-center justify-center mx-auto">
+            <AlertCircle className="w-6 h-6" />
+          </div>
+          <div>
+            <h3 className="text-base font-semibold text-white">Google Drive Error</h3>
+            <p className="text-xs text-rose-300/90 mt-1 max-w-md mx-auto leading-relaxed">
+              {(error as any)?.message}
+            </p>
+          </div>
+          <div className="flex items-center justify-center gap-3 pt-2">
+            <button
+              onClick={() => refetch()}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 text-xs font-semibold border border-rose-500/30 transition active:scale-95"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Retry Request</span>
+            </button>
+          </div>
         </div>
       ) : items.length === 0 ? (
-        <div className="p-12 rounded-3xl border border-dashed border-white/10 text-center space-y-3">
-          <FolderOpen className="w-10 h-10 text-muted-foreground mx-auto" />
-          <h3 className="text-sm font-semibold text-white">This folder is empty</h3>
-          <p className="text-xs text-muted-foreground">
-            No files or subfolders found in this directory.
-          </p>
+        <div className="p-10 rounded-3xl border border-dashed border-white/10 text-center space-y-4 max-w-md mx-auto">
+          <div className="w-12 h-12 rounded-2xl bg-white/5 flex items-center justify-center mx-auto text-muted-foreground">
+            <FolderOpen className="w-6 h-6" />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-white">This folder is empty</h3>
+            <p className="text-xs text-muted-foreground mt-1">
+              No files or subfolders found in this directory.
+            </p>
+          </div>
+
+          {isRoot && (user?.role === "admin" || !user) && (
+            <div className="pt-2 space-y-2">
+              <button
+                onClick={handleSeedCategories}
+                disabled={isSeeding}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white text-xs font-semibold shadow-lg shadow-sky-500/20 transition active:scale-95 disabled:opacity-50"
+              >
+                {isSeeding ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Creating Categories...</span>
+                  </>
+                ) : (
+                  <>
+                    <FolderPlus className="w-4 h-4" />
+                    <span>Create Default Categories</span>
+                  </>
+                )}
+              </button>
+              <p className="text-[11px] text-muted-foreground">
+                Sets up Identity, Medical, Property, Finance, Education, and Vehicle folders.
+              </p>
+              {seedMessage && (
+                <p className={`text-xs mt-2 font-medium ${seedMessage.startsWith("Error") ? "text-rose-400" : "text-emerald-400"}`}>
+                  {seedMessage}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         <div className="space-y-8">

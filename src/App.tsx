@@ -7,9 +7,12 @@ import { LoginPage } from "./components/auth/LoginPage";
 import { AccessDeniedPage } from "./pages/AccessDeniedPage";
 import { AppLayout } from "./components/layout/AppLayout";
 import { DocsPage } from "./pages/DocsPage";
-import { PlaceholderPage } from "./pages/PlaceholderPage";
+import { HomePage } from "./pages/HomePage";
+import { SavedPage } from "./pages/SavedPage";
+import { ActivityPage } from "./pages/ActivityPage";
+import { MorePage } from "./pages/MorePage";
 import { PwaUpdatePrompt } from "./components/common/PwaUpdatePrompt";
-import { Home, Bookmark, Activity, MoreHorizontal, Shield } from "lucide-react";
+import { Shield } from "lucide-react";
 
 const AppRoutes: React.FC = () => {
   const { user, isLoading } = useAuth();
@@ -41,54 +44,10 @@ const AppRoutes: React.FC = () => {
         <Route element={<AppLayout />}>
           <Route path="/" element={<Navigate to="/docs" replace />} />
           <Route path="/docs" element={<DocsPage />} />
-          <Route
-            path="/home"
-            element={
-              <PlaceholderPage
-                title="Home Dashboard"
-                subtitle="High-level vault summary, storage meter, and recent files"
-                icon={Home}
-                badge="Phase 3"
-                phaseInfo="Storage quota analytics, fast search, and recently opened document shortcuts."
-              />
-            }
-          />
-          <Route
-            path="/saved"
-            element={
-              <PlaceholderPage
-                title="Saved & Starred"
-                subtitle="Quick access to pinned documents and offline vault"
-                icon={Bookmark}
-                badge="Phase 3"
-                phaseInfo="Starred document quick list and AES-GCM encrypted local device offline storage."
-              />
-            }
-          />
-          <Route
-            path="/activity"
-            element={
-              <PlaceholderPage
-                title="Activity Feed"
-                subtitle="Neon Postgres indexed audit trail of vault events"
-                icon={Activity}
-                badge="Phase 3"
-                phaseInfo="Live event stream of file uploads, moves, renames, and deletions."
-              />
-            }
-          />
-          <Route
-            path="/more"
-            element={
-              <PlaceholderPage
-                title="More & Settings"
-                subtitle="Google Drive Bin, members management, and security lock"
-                icon={MoreHorizontal}
-                badge="Phase 3"
-                phaseInfo="Drive trash bin restoration, family members administration, and WebAuthn biometrics."
-              />
-            }
-          />
+          <Route path="/home" element={<HomePage />} />
+          <Route path="/saved" element={<SavedPage />} />
+          <Route path="/activity" element={<ActivityPage />} />
+          <Route path="/more" element={<MorePage />} />
           <Route path="*" element={<Navigate to="/docs" replace />} />
         </Route>
       )}
