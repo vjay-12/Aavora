@@ -1,0 +1,51 @@
+import type { IncomingMessage, ServerResponse } from "http";
+import { authenticateRequest } from "../_utils/auth";
+import { createDriveFolder } from "../_utils/drive";
+import { json, error, parseJsonBody } from "../_utils/response";
+import { db } from "../../src/db";
+import { activity } from "../../src/db/schema";
+
+export default async function handler(req: IncomingMessage, res: ServerResponse) {
+  if (req.method !== "POST") return error(res, "Method not allowed", 405);
+
+  try {
+    const session = await authenticateRequest(req);
+    if (!session) return error(res, "Unauthorized", 401);
+
+    const body = await parseJsonBody<{
+      name: string;
+      parentId?: string;
+      color?: string;
+      icon?: string;
+    }>(req);
+
+    if (!body.name || !body.name.trim()) {
+      return error(res, "Folder name is required", 400);
+    }
+
+    const appProperties: Record<string, string> = {
+      createdBy: session.email,
+      createdByName: session.name,
+    };
+    if (body.color) appProperties.cardColor = body.color;
+    if (body.icon) appProperties.cardIcon = body.icon;
+
+    const folder = await createDriveFolder(body.name.trim(), body.parentId, appProperties);
+
+    // Record activity in Neon
+    await db.insert(activity).values({
+      userId: session.email,
+      userName: session.name,
+      action: "create_folder",
+      driveId: folder.id,
+      name: folder.name,
+      path: body.parentId,
+      meta: { color: body.color, icon: body.icon },
+    });
+
+    return json(res, { folder });
+  } catch (err: any) {
+    console.error("Create folder error:", err);
+    return error(res, err.message || "Failed to create folder", 500);
+  }
+}
