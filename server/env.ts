@@ -17,14 +17,59 @@ const REQUIRED_VARS = [
   "DATABASE_URL",
   "GOOGLE_CLIENT_ID",
   "GOOGLE_CLIENT_SECRET",
-  "GOOGLE_REDIRECT_URI",
   "GOOGLE_DRIVE_ROOT_FOLDER_ID",
   "ADMIN_EMAIL",
   "SESSION_SECRET",
-  "APP_URL",
 ] as const;
 
 let cachedEnv: EnvConfig | null = null;
+
+/**
+ * Trims trailing slashes from APP_URL, ensures valid scheme, and avoids mixing http/https.
+ */
+export function normalizeAppUrl(rawUrl?: string): string {
+  let u = (rawUrl || "").trim();
+  if (!u) {
+    if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+      u = `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+    } else if (process.env.VERCEL_URL) {
+      u = `https://${process.env.VERCEL_URL}`;
+    } else {
+      u = "http://localhost:5173";
+    }
+  }
+
+  // Ensure scheme
+  if (!/^https?:\/\//i.test(u)) {
+    if (u.includes("localhost") || u.includes("127.0.0.1")) {
+      u = `http://${u}`;
+    } else {
+      u = `https://${u}`;
+    }
+  }
+
+  // Never mix http and https for production hosts
+  if (!u.includes("localhost") && !u.includes("127.0.0.1") && u.startsWith("http://")) {
+    u = u.replace(/^http:\/\//i, "https://");
+  }
+
+  // Trim trailing slashes
+  return u.replace(/\/+$/, "");
+}
+
+/**
+ * Returns the single source of truth redirect URI: ${APP_URL}/api/auth/callback.
+ * Byte-for-byte identical in authorize request and token exchange.
+ */
+export function getOAuthRedirectUri(): string {
+  const env = getEnv();
+  const base = normalizeAppUrl(env.APP_URL);
+  const uri = `${base}/api/auth/callback`;
+  if (process.env.NODE_ENV !== "production") {
+    console.log(`[OAuth Dev] Using redirect_uri: ${uri}`);
+  }
+  return uri;
+}
 
 /**
  * Validates all required environment variables.
@@ -37,6 +82,28 @@ export function validateEnv(customEnv: Record<string, string | undefined> = proc
     const val = customEnv[key];
     if (!val || val.trim().length === 0) {
       missing.push(key);
+    }
+  }
+
+  // APP_URL can come from customEnv.APP_URL, customEnv.GOOGLE_REDIRECT_URI origin, or VERCEL_URL
+  const rawAppUrl = (customEnv.APP_URL || "").trim();
+  const rawRedirectUri = (customEnv.GOOGLE_REDIRECT_URI || "").trim();
+  let effectiveAppUrl = "";
+
+  if (rawAppUrl) {
+    effectiveAppUrl = normalizeAppUrl(rawAppUrl);
+  } else if (rawRedirectUri) {
+    try {
+      effectiveAppUrl = normalizeAppUrl(new URL(rawRedirectUri).origin);
+    } catch {
+      effectiveAppUrl = normalizeAppUrl();
+    }
+  } else {
+    // If neither is explicitly provided and not running in standard cloud fallback
+    if (!customEnv.APP_URL && !process.env.VERCEL_URL && !process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+      missing.push("APP_URL");
+    } else {
+      effectiveAppUrl = normalizeAppUrl();
     }
   }
 
@@ -66,16 +133,18 @@ export function validateEnv(customEnv: Record<string, string | undefined> = proc
     allowedList.push(adminEmail);
   }
 
+  const canonicalRedirectUri = `${effectiveAppUrl}/api/auth/callback`;
+
   return {
     DATABASE_URL: customEnv.DATABASE_URL!.trim(),
     GOOGLE_CLIENT_ID: customEnv.GOOGLE_CLIENT_ID!.trim(),
     GOOGLE_CLIENT_SECRET: customEnv.GOOGLE_CLIENT_SECRET!.trim(),
-    GOOGLE_REDIRECT_URI: customEnv.GOOGLE_REDIRECT_URI!.trim(),
+    GOOGLE_REDIRECT_URI: canonicalRedirectUri,
     GOOGLE_DRIVE_ROOT_FOLDER_ID: customEnv.GOOGLE_DRIVE_ROOT_FOLDER_ID!.trim(),
     ADMIN_EMAIL: adminEmail,
     ALLOWED_EMAILS: allowedList,
     SESSION_SECRET: sessionSecret,
-    APP_URL: (customEnv.APP_URL || "http://localhost:5173").trim().replace(/\/$/, ""),
+    APP_URL: effectiveAppUrl,
     GOOGLE_ADMIN_REFRESH_TOKEN: customEnv.GOOGLE_ADMIN_REFRESH_TOKEN?.trim(),
   };
 }

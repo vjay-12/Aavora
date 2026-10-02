@@ -1,18 +1,22 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import crypto from "crypto";
 import { db } from "../../server/db/index.js";
 import { users } from "../../server/db/schema.js";
 import { eq } from "drizzle-orm";
-import { getEnv } from "../../server/env.js";
+import { getEnv, getOAuthRedirectUri } from "../../server/env.js";
 import {
   createSessionToken,
   setSessionCookie,
   clearSessionCookie,
   parseCookies,
   authenticateRequest,
+  createOAuthState,
+  verifyOAuthState,
+  OAUTH_STATE_COOKIE,
 } from "../../server/auth.js";
+import { handleAdminDriveConnectCallback } from "../../server/drive.js";
 import { checkRateLimit } from "../../server/rate-limit.js";
 import { json, error } from "../../server/response.js";
+import { decodeJwt } from "jose";
 
 function getAction(req: IncomingMessage): string {
   const url = new URL(req.url || "", `http://${req.headers.host || "localhost:5173"}`);
@@ -35,19 +39,21 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     try {
       const env = getEnv();
+      const redirectUri = getOAuthRedirectUri();
       const scope = ["openid", "email", "profile"].join(" ");
-      const state = Buffer.from(crypto.randomUUID()).toString("hex");
+      const { stateParam, cookieValue } = createOAuthState("login");
+
       const isProd = process.env.NODE_ENV === "production";
       res.setHeader(
         "Set-Cookie",
-        `aavora_oauth_state=${state}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600${isProd ? "; Secure" : ""}`
+        `${OAUTH_STATE_COOKIE}=${cookieValue}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600${isProd ? "; Secure" : ""}`
       );
 
       const params = new URLSearchParams({
         client_id: env.GOOGLE_CLIENT_ID,
-        redirect_uri: env.GOOGLE_REDIRECT_URI,
+        redirect_uri: redirectUri,
         response_type: "code",
-        state,
+        state: stateParam,
         scope,
         prompt: "select_account",
       });
@@ -71,35 +77,46 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const errorParam = url.searchParams.get("error");
 
     const cookies = parseCookies(req.headers.cookie);
+    const cookieState = cookies[OAUTH_STATE_COOKIE];
 
-    // If this was an admin connect flow initiated with aavora_admin_oauth_state
-    const adminState = cookies["aavora_admin_oauth_state"];
-    if (adminState && adminState === state) {
-      // Forward to admin callback handler logic
-      const adminHandler = (await import("../admin/[action].js")).default;
-      return adminHandler(req, res);
-    }
-
-    const cookieState = cookies["aavora_oauth_state"];
-
-    // Always clear oauth state cookie on callback
+    // Always clear OAuth state cookie on callback
     const isProd = process.env.NODE_ENV === "production";
     res.setHeader(
       "Set-Cookie",
-      `aavora_oauth_state=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${isProd ? "; Secure" : ""}`
+      `${OAUTH_STATE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${isProd ? "; Secure" : ""}`
     );
 
-    if (errorParam || !code || !state || !cookieState || state !== cookieState) {
+    const stateResult = verifyOAuthState(state, cookieState);
+    const isAdminConnect =
+      stateResult.intent === "admin-connect" || (cookieState && cookieState.startsWith("admin-connect"));
+
+    if (errorParam || !code || !stateResult.valid) {
       res.statusCode = 302;
       const errReason = errorParam || (!code ? "missing_code" : "invalid_state");
-      res.setHeader("Location", `/access-denied?error=${encodeURIComponent(errReason)}`);
+      if (isAdminConnect) {
+        res.setHeader(
+          "Location",
+          `/more?driveError=${encodeURIComponent(errReason)}&msg=${encodeURIComponent(
+            "Authentication session expired or was cancelled. Please try again."
+          )}`
+        );
+      } else {
+        res.setHeader("Location", `/access-denied?error=${encodeURIComponent(errReason)}`);
+      }
       return res.end();
     }
 
+    // Branch to Admin Drive Connect flow
+    if (stateResult.intent === "admin-connect") {
+      return await handleAdminDriveConnectCallback(req, res, code);
+    }
+
+    // Branch to Normal User Login flow
     try {
       const env = getEnv();
+      const redirectUri = getOAuthRedirectUri();
 
-      // Exchange code for identity token
+      // Exchange code for identity token using the single source of truth redirect_uri
       const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -107,7 +124,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
           code,
           client_id: env.GOOGLE_CLIENT_ID,
           client_secret: env.GOOGLE_CLIENT_SECRET,
-          redirect_uri: env.GOOGLE_REDIRECT_URI,
+          redirect_uri: redirectUri,
           grant_type: "authorization_code",
         }),
       });
@@ -123,20 +140,38 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         return res.end();
       }
 
-      // Fetch Google User Profile
-      const profileRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-        headers: { Authorization: `Bearer ${tokenData.access_token}` },
-      });
-      const profile = await profileRes.json();
+      // Read verified email from ID token first
+      let email = "";
+      let name = "";
+      if (tokenData.id_token) {
+        try {
+          const claims = decodeJwt(tokenData.id_token);
+          if (claims.email && (claims.email_verified === true || claims.email_verified === "true")) {
+            email = String(claims.email).toLowerCase().trim();
+            name = (claims.name as string) || email.split("@")[0];
+          }
+        } catch (err) {
+          console.error("[OAuth] Failed to decode id_token:", err);
+        }
+      }
 
-      if (!profile.email) {
+      // Fallback to Google User Profile endpoint if needed
+      if (!email && tokenData.access_token) {
+        const profileRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+          headers: { Authorization: `Bearer ${tokenData.access_token}` },
+        });
+        const profile = await profileRes.json();
+        if (profile.email) {
+          email = profile.email.toLowerCase().trim();
+          name = profile.name || email.split("@")[0];
+        }
+      }
+
+      if (!email) {
         res.statusCode = 302;
         res.setHeader("Location", "/access-denied?error=no_email");
         return res.end();
       }
-
-      const email = profile.email.toLowerCase().trim();
-      const name = profile.name || email.split("@")[0];
 
       // Verify user exists in Neon and is active
       const [userRecord] = await db

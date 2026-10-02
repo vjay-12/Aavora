@@ -31,12 +31,13 @@ export const MorePage: React.FC = () => {
   } = useLock();
 
   const [searchParams] = useSearchParams();
-  const driveConnectedParam = searchParams.get("admin_drive_connected");
-  const errorParam = searchParams.get("error");
+  const driveConnectedParam = searchParams.get("admin_drive_connected") || searchParams.get("driveConnected");
+  const driveErrorParam = searchParams.get("driveError");
+  const errorParam = searchParams.get("error") || driveErrorParam;
   const msgParam = searchParams.get("msg");
 
   const [activeSection, setActiveSection] = useState<"bin" | "members" | "security" | "drive">(
-    user?.role === "admin" && (driveConnectedParam || errorParam) ? "drive" : "bin"
+    user?.role === "admin" && (driveConnectedParam || errorParam || driveErrorParam) ? "drive" : "bin"
   );
 
   // Fetch Drive Health (Admin only)
@@ -562,11 +563,21 @@ export const MorePage: React.FC = () => {
           )}
 
           {errorParam && (
-            <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-3">
+            <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-3 animate-slideDown">
               <AlertTriangle className="w-5 h-5 text-rose-400 flex-shrink-0" />
               <div>
-                <p className="font-semibold">Connection Error: {errorParam}</p>
-                <p className="text-[11px] text-rose-200/80">{msgParam || "Failed to complete Google Drive authentication."}</p>
+                <p className="font-semibold text-white">
+                  {errorParam === "wrong_account"
+                    ? "Wrong Google Account"
+                    : errorParam === "missing_refresh_token"
+                    ? "Refresh Token Missing"
+                    : errorParam === "invalid_state"
+                    ? "Session Expired"
+                    : `Connection Error: ${errorParam}`}
+                </p>
+                <p className="text-[11px] text-rose-200/90 mt-0.5">
+                  {msgParam || "Failed to complete Google Drive authentication."}
+                </p>
               </div>
             </div>
           )}

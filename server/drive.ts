@@ -1,8 +1,11 @@
 import { db } from "./db/index.js";
 import { settings } from "./db/schema.js";
 import { eq } from "drizzle-orm";
-import { decryptSecret } from "./crypto.js";
-import { getEnv } from "./env.js";
+import { decryptSecret, encryptSecret } from "./crypto.js";
+import { getEnv, getOAuthRedirectUri } from "./env.js";
+import { maskEmail } from "./auth.js";
+import { decodeJwt } from "jose";
+import type { IncomingMessage, ServerResponse } from "http";
 
 export class AdminDriveError extends Error {
   code: string;
@@ -569,4 +572,137 @@ export async function getDriveStorageQuota(): Promise<{
     usageInDriveTrash: quota.usageInDriveTrash,
     isUnlimited,
   };
+}
+
+/**
+ * Completes the Admin Drive OAuth connection callback:
+ * 1. Exchanges code for tokens using byte-for-byte identical redirect_uri
+ * 2. Reads verified email from ID token, ensuring it equals ADMIN_EMAIL
+ * 3. Enforces that a refresh token was returned by Google
+ * 4. Encrypts and stores the refresh token in the settings table
+ * 5. Invalidates caches and redirects to /home?driveConnected=true
+ */
+export async function handleAdminDriveConnectCallback(
+  req: IncomingMessage,
+  res: ServerResponse,
+  code: string
+): Promise<void> {
+  const env = getEnv();
+  const redirectUri = getOAuthRedirectUri();
+
+  try {
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code,
+        client_id: env.GOOGLE_CLIENT_ID,
+        client_secret: env.GOOGLE_CLIENT_SECRET,
+        redirect_uri: redirectUri,
+        grant_type: "authorization_code",
+      }),
+    });
+
+    const tokenData = await tokenRes.json();
+    if (!tokenRes.ok || !tokenData.access_token) {
+      console.error("[Admin Drive OAuth] Token exchange failed:", tokenData);
+      res.statusCode = 302;
+      res.setHeader(
+        "Location",
+        `/more?driveError=token_exchange_failed&msg=${encodeURIComponent(
+          tokenData.error_description || "Token exchange failed"
+        )}`
+      );
+      res.end();
+      return;
+    }
+
+    // Read verified email from ID token
+    let verifiedEmail = "";
+    if (tokenData.id_token) {
+      try {
+        const claims = decodeJwt(tokenData.id_token);
+        if (claims.email && (claims.email_verified === true || claims.email_verified === "true")) {
+          verifiedEmail = String(claims.email).toLowerCase().trim();
+        }
+      } catch (err) {
+        console.error("[Admin Drive OAuth] Failed to decode id_token:", err);
+      }
+    }
+
+    // Fallback to userinfo if needed
+    if (!verifiedEmail && tokenData.access_token) {
+      const profileRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+        headers: { Authorization: `Bearer ${tokenData.access_token}` },
+      });
+      const profile = await profileRes.json();
+      if (profile.email) {
+        verifiedEmail = String(profile.email).toLowerCase().trim();
+      }
+    }
+
+    // Must match ADMIN_EMAIL (case-insensitive)
+    if (verifiedEmail.toLowerCase() !== env.ADMIN_EMAIL.toLowerCase()) {
+      console.error(
+        `[Admin Drive OAuth] Email mismatch. Expected ${env.ADMIN_EMAIL}, got ${verifiedEmail}`
+      );
+      const maskedAdmin = maskEmail(env.ADMIN_EMAIL);
+      const msg = `Please connect with ${maskedAdmin}`;
+      res.statusCode = 302;
+      res.setHeader(
+        "Location",
+        `/more?driveError=wrong_account&msg=${encodeURIComponent(msg)}`
+      );
+      res.end();
+      return;
+    }
+
+    // Must return a refresh token
+    if (!tokenData.refresh_token) {
+      console.warn("[Admin Drive OAuth] No refresh token returned by Google");
+      const msg =
+        "Google did not return a refresh token. Remove Aavora at myaccount.google.com/permissions and try again.";
+      res.statusCode = 302;
+      res.setHeader(
+        "Location",
+        `/more?driveError=missing_refresh_token&msg=${encodeURIComponent(msg)}`
+      );
+      res.end();
+      return;
+    }
+
+    // Encrypt and store in settings table
+    const encryptedToken = encryptSecret(tokenData.refresh_token);
+    await db
+      .insert(settings)
+      .values({
+        key: "admin_drive_refresh_token",
+        valueEncrypted: encryptedToken,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: settings.key,
+        set: {
+          valueEncrypted: encryptedToken,
+          updatedAt: new Date(),
+        },
+      });
+
+    invalidateAdminTokenCache();
+    invalidateVaultCache();
+
+    res.statusCode = 302;
+    res.setHeader("Location", "/home?driveConnected=true");
+    res.end();
+    return;
+  } catch (err: any) {
+    console.error("[Admin Drive OAuth Callback Error]:", err);
+    res.statusCode = 302;
+    res.setHeader(
+      "Location",
+      `/more?driveError=server_error&msg=${encodeURIComponent(err.message || "Failed to connect Google Drive")}`
+    );
+    res.end();
+    return;
+  }
 }

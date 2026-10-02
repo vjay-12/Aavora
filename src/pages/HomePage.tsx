@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useQuery } from "@tanstack/react-query";
 import { getRecentlyViewed, RecentItem } from "../lib/recently-viewed";
@@ -22,9 +22,25 @@ import {
 export const HomePage: React.FC = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const driveConnected = searchParams.get("driveConnected") === "true" || searchParams.get("admin_drive_connected") === "true";
+  const [showConnectedToast, setShowConnectedToast] = useState(driveConnected);
   const [recentItems, setRecentItems] = useState<RecentItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [isSeeding, setIsSeeding] = useState(false);
+
+  useEffect(() => {
+    if (driveConnected) {
+      setShowConnectedToast(true);
+      const timer = setTimeout(() => {
+        setShowConnectedToast(false);
+        searchParams.delete("driveConnected");
+        searchParams.delete("admin_drive_connected");
+        setSearchParams(searchParams, { replace: true });
+      }, 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [driveConnected, searchParams, setSearchParams]);
 
   // Load recently viewed from IndexedDB (local to device)
   useEffect(() => {
@@ -104,6 +120,28 @@ export const HomePage: React.FC = () => {
 
   return (
     <div className="space-y-8 animate-fadeIn">
+      {/* Drive Connected Success Toast */}
+      {showConnectedToast && (
+        <div className="p-4 rounded-2xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs flex items-center justify-between gap-3 animate-slideDown shadow-lg shadow-emerald-500/10">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center flex-shrink-0">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="font-bold text-sm text-white">Google Drive Connected Successfully!</p>
+              <p className="text-[11px] text-emerald-200/90">Vault synchronization is active. All documents are now accessible.</p>
+            </div>
+          </div>
+          <button
+            onClick={() => setShowConnectedToast(false)}
+            className="text-emerald-400 hover:text-white p-1 text-sm font-semibold"
+            aria-label="Dismiss toast"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Admin Drive Not Connected Banner */}
       {isDriveDisconnected && (
         <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-slideDown">

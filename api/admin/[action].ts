@@ -1,11 +1,15 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import crypto from "crypto";
-import { authenticateRequest, parseCookies } from "../../server/auth.js";
-import { encryptSecret } from "../../server/crypto.js";
-import { invalidateAdminTokenCache } from "../../server/drive.js";
-import { getEnv } from "../../server/env.js";
+import {
+  authenticateRequest,
+  parseCookies,
+  createOAuthState,
+  verifyOAuthState,
+  OAUTH_STATE_COOKIE,
+} from "../../server/auth.js";
+import { handleAdminDriveConnectCallback } from "../../server/drive.js";
+import { getEnv, getOAuthRedirectUri } from "../../server/env.js";
 import { db } from "../../server/db/index.js";
-import { users, settings } from "../../server/db/schema.js";
+import { users } from "../../server/db/schema.js";
 import { eq, desc } from "drizzle-orm";
 import { json, error, parseJsonBody } from "../../server/response.js";
 
@@ -48,16 +52,14 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         return error(res, "Forbidden: Only the designated admin can connect Google Drive.", 403);
       }
 
-      const state = crypto.randomUUID();
+      const { stateParam, cookieValue } = createOAuthState("admin-connect", { adminEmail: user.email });
       const isProd = process.env.NODE_ENV === "production";
       res.setHeader(
         "Set-Cookie",
-        `aavora_admin_oauth_state=${state}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600${isProd ? "; Secure" : ""}`
+        `${OAUTH_STATE_COOKIE}=${cookieValue}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600${isProd ? "; Secure" : ""}`
       );
 
-      const baseOrigin = new URL(env.GOOGLE_REDIRECT_URI).origin;
-      const redirectUri = process.env.GOOGLE_ADMIN_REDIRECT_URI || `${baseOrigin}/api/admin/drive/callback`;
-
+      const redirectUri = getOAuthRedirectUri();
       const scope = [
         "openid",
         "email",
@@ -69,11 +71,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         client_id: env.GOOGLE_CLIENT_ID,
         redirect_uri: redirectUri,
         response_type: "code",
-        state,
+        state: stateParam,
         scope,
+        login_hint: user.email,
+        prompt: "select_account consent",
         access_type: "offline",
-        prompt: "consent",
-        include_granted_scopes: "true",
+        include_granted_scopes: "false",
       });
 
       const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
@@ -94,116 +97,27 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const errorParam = url.searchParams.get("error");
 
     const cookies = parseCookies(req.headers.cookie);
-    const cookieState = cookies["aavora_admin_oauth_state"];
+    const cookieState = cookies[OAUTH_STATE_COOKIE];
 
-    // Clear admin oauth state cookie
+    // Clear admin OAuth state cookie
     const isProd = process.env.NODE_ENV === "production";
     res.setHeader(
       "Set-Cookie",
-      `aavora_admin_oauth_state=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${isProd ? "; Secure" : ""}`
+      `${OAUTH_STATE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${isProd ? "; Secure" : ""}`
     );
 
-    if (errorParam || !code || !state || !cookieState || state !== cookieState) {
+    const stateResult = verifyOAuthState(state, cookieState);
+    if (errorParam || !code || !stateResult.valid) {
       res.statusCode = 302;
       const reason = errorParam || (!code ? "missing_code" : "invalid_state");
-      res.setHeader("Location", `/more?error=${encodeURIComponent(reason)}`);
-      return res.end();
-    }
-
-    try {
-      const env = getEnv();
-      const baseOrigin = new URL(env.GOOGLE_REDIRECT_URI).origin;
-      const isDelegatedFromAuthCallback = (req.url || "").includes("/api/auth/callback");
-      const redirectUri = process.env.GOOGLE_ADMIN_REDIRECT_URI ||
-        (isDelegatedFromAuthCallback ? env.GOOGLE_REDIRECT_URI : `${baseOrigin}/api/admin/drive/callback`);
-
-      // Exchange authorization code for tokens
-      const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          code,
-          client_id: env.GOOGLE_CLIENT_ID,
-          client_secret: env.GOOGLE_CLIENT_SECRET,
-          redirect_uri: redirectUri,
-          grant_type: "authorization_code",
-        }),
-      });
-
-      const tokenData = await tokenRes.json();
-      if (!tokenRes.ok || !tokenData.access_token) {
-        console.error("[Admin Drive OAuth] Token exchange failed:", tokenData);
-        res.statusCode = 302;
-        res.setHeader(
-          "Location",
-          `/more?error=${encodeURIComponent(tokenData.error_description || "Token exchange failed")}`
-        );
-        return res.end();
-      }
-
-      // Fetch Google profile and verify email equals ADMIN_EMAIL
-      const profileRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
-        headers: { Authorization: `Bearer ${tokenData.access_token}` },
-      });
-      const profile = await profileRes.json();
-
-      const authorizedEmail = (profile.email || "").toLowerCase().trim();
-      if (authorizedEmail !== env.ADMIN_EMAIL.toLowerCase()) {
-        console.error(`[Admin Drive OAuth] Email mismatch. Expected ${env.ADMIN_EMAIL}, got ${authorizedEmail}`);
-        res.statusCode = 302;
-        res.setHeader(
-          "Location",
-          `/more?error=admin_email_mismatch&msg=${encodeURIComponent(
-            "Access denied: You must authenticate with the designated admin Google account."
-          )}`
-        );
-        return res.end();
-      }
-
-      if (!tokenData.refresh_token) {
-        console.warn("[Admin Drive OAuth] No refresh token returned by Google");
-        res.statusCode = 302;
-        res.setHeader(
-          "Location",
-          `/more?error=no_refresh_token&msg=${encodeURIComponent(
-            "Google did not return a refresh token. Please click Connect Drive again with consent."
-          )}`
-        );
-        return res.end();
-      }
-
-      // Encrypt refresh token using AES-256-GCM and store in settings table
-      const encryptedToken = encryptSecret(tokenData.refresh_token);
-
-      await db
-        .insert(settings)
-        .values({
-          key: "admin_drive_refresh_token",
-          valueEncrypted: encryptedToken,
-          updatedAt: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: settings.key,
-          set: {
-            valueEncrypted: encryptedToken,
-            updatedAt: new Date(),
-          },
-        });
-
-      invalidateAdminTokenCache();
-
-      res.statusCode = 302;
-      res.setHeader("Location", "/home?admin_drive_connected=true");
-      return res.end();
-    } catch (err: any) {
-      console.error("[Admin Drive Callback Error]:", err);
-      res.statusCode = 302;
       res.setHeader(
         "Location",
-        `/more?error=${encodeURIComponent(err.message || "Failed to complete admin Drive connection")}`
+        `/more?driveError=${encodeURIComponent(reason)}&msg=${encodeURIComponent("Authentication session expired or was cancelled.")}`
       );
       return res.end();
     }
+
+    return await handleAdminDriveConnectCallback(req, res, code);
   }
 
   // 3. /api/admin/users

@@ -17,9 +17,13 @@ Aavora is a high-speed, secure, private cloud document vault for personal and fa
 - **Node.js** v20+ (Node v24 tested & supported)
 - **Google Cloud Console** project with:
   - Google Drive API v3 enabled
-  - OAuth 2.0 Web Client ID with redirect URI: `http://localhost:5173/api/auth/callback`
+  - OAuth 2.0 Web Client ID with **Authorized redirect URIs**:
+    - **Local Development:** `http://localhost:5173/api/auth/callback`
+    - **Production (Vercel):** `https://aavora.vercel.app/api/auth/callback`
   - OAuth Consent Screen configured with test users
 - **Neon Postgres** serverless database instance in Singapore (`aws-ap-southeast-1`)
+
+> **Note on OAuth Redirect URIs:** Aavora multiplexes both normal user sign-in and admin Drive reconnection through the single canonical redirect URI (`${APP_URL}/api/auth/callback`) using a cryptographically signed HMAC `state` token carrying flow intent. Only this **one** redirect URI per environment needs to be registered in Google Cloud Console.
 
 ---
 

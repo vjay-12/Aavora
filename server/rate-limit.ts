@@ -30,7 +30,7 @@ export function getClientIp(req: IncomingMessage): string {
   if (Array.isArray(forwarded) && forwarded.length > 0) {
     return forwarded[0].trim();
   }
-  return req.socket.remoteAddress || "127.0.0.1";
+  return req.socket?.remoteAddress || (req as any).connection?.remoteAddress || "127.0.0.1";
 }
 
 /**

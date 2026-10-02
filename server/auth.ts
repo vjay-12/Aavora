@@ -1,4 +1,5 @@
 import { EncryptJWT, jwtDecrypt } from "jose";
+import crypto from "crypto";
 import { db } from "./db/index.js";
 import { users } from "./db/schema.js";
 import { eq } from "drizzle-orm";
@@ -6,6 +7,7 @@ import { getEnv } from "./env.js";
 import type { IncomingMessage, ServerResponse } from "http";
 
 export const COOKIE_NAME = "aavora_session";
+export const OAUTH_STATE_COOKIE = "aavora_oauth_state";
 
 function getSecretKey(): Uint8Array {
   const env = getEnv();
@@ -87,6 +89,83 @@ export function clearSessionCookie(res: ServerResponse) {
     res.setHeader("Set-Cookie", [...list, cookie]);
   } else if (typeof res.setHeader === "function") {
     res.setHeader("Set-Cookie", cookie);
+  }
+}
+
+/**
+ * Mask an email for user-facing security messages (e.g., vhrbaskaran@gmail.com -> v***@gmail.com).
+ */
+export function maskEmail(email: string): string {
+  if (!email || !email.includes("@")) return email;
+  const [local, domain] = email.split("@");
+  if (local.length <= 1) {
+    return `${local}***@${domain}`;
+  }
+  return `${local[0]}***@${domain}`;
+}
+
+/**
+ * Creates a signed, short-lived OAuth state carrying flow intent ("login" or "admin-connect")
+ * and an anti-CSRF nonce.
+ */
+export function createOAuthState(
+  intent: "login" | "admin-connect",
+  extra: Record<string, any> = {}
+): { stateParam: string; cookieValue: string; nonce: string } {
+  const env = getEnv();
+  const nonce = crypto.randomUUID();
+  const timestamp = Date.now();
+  const payload = JSON.stringify({ intent, nonce, timestamp, ...extra });
+  const sig = crypto.createHmac("sha256", env.SESSION_SECRET).update(payload).digest("hex");
+  const stateParam = Buffer.from(JSON.stringify({ p: payload, s: sig })).toString("base64url");
+  const cookieValue = `${intent}:${nonce}`;
+  return { stateParam, cookieValue, nonce };
+}
+
+/**
+ * Verifies the signed OAuth state and matches against the HttpOnly cookie nonce.
+ * Expiry window: 10 minutes.
+ */
+export function verifyOAuthState(
+  stateParam?: string | null,
+  cookieValue?: string | null
+): {
+  intent: "login" | "admin-connect";
+  valid: boolean;
+  data: Record<string, any>;
+} {
+  if (!stateParam) return { intent: "login", valid: false, data: {} };
+  try {
+    const env = getEnv();
+    const parsed = JSON.parse(Buffer.from(stateParam, "base64url").toString("utf8"));
+    if (!parsed.p || !parsed.s) return { intent: "login", valid: false, data: {} };
+
+    const expectedSig = crypto.createHmac("sha256", env.SESSION_SECRET).update(parsed.p).digest("hex");
+    if (parsed.s !== expectedSig) {
+      return { intent: "login", valid: false, data: {} };
+    }
+
+    const data = JSON.parse(parsed.p);
+    const intent: "login" | "admin-connect" = data.intent === "admin-connect" ? "admin-connect" : "login";
+
+    // 10-minute expiry window
+    if (typeof data.timestamp !== "number" || Date.now() - data.timestamp > 10 * 60 * 1000) {
+      return { intent, valid: false, data };
+    }
+
+    // Must match HttpOnly cookie nonce
+    if (!cookieValue) {
+      return { intent, valid: false, data };
+    }
+
+    const expectedCookie = `${intent}:${data.nonce}`;
+    if (cookieValue !== expectedCookie) {
+      return { intent, valid: false, data };
+    }
+
+    return { intent, valid: true, data };
+  } catch {
+    return { intent: "login", valid: false, data: {} };
   }
 }
 
