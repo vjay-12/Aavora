@@ -48,6 +48,7 @@ interface DriveItem {
 import { UploadModal } from "../components/docs/UploadModal";
 import { NewFolderModal } from "../components/docs/NewFolderModal";
 import { DocDetailPanel, DocItem } from "../components/docs/DocDetailPanel";
+import { DocumentPreview } from "../components/docs/DocumentPreview";
 
 export const DocsPage: React.FC = () => {
   const { user } = useAuth();
@@ -95,6 +96,7 @@ export const DocsPage: React.FC = () => {
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<DocItem | null>(null);
+  const [previewDoc, setPreviewDoc] = useState<DocItem | null>(null);
 
   // Clear msg search param once read
   useEffect(() => {
@@ -177,6 +179,17 @@ export const DocsPage: React.FC = () => {
     },
     staleTime: 0,
   });
+
+  // Handle URL fileId like /docs?fileId=xyz
+  useEffect(() => {
+    const fileIdParam = searchParams.get("fileId");
+    if (fileIdParam) {
+      const found = (data?.items || data?.files || []).find((f: any) => f.id === fileIdParam);
+      if (found) {
+        setPreviewDoc(found);
+      }
+    }
+  }, [searchParams, data]);
 
   const isDriveDisconnected =
     (error as any)?.code === "ADMIN_DRIVE_NOT_CONNECTED" ||
@@ -727,7 +740,7 @@ export const DocsPage: React.FC = () => {
                       <div
                         key={file.id}
                         data-testid={`file-card-${file.id}`}
-                        onClick={() => setSelectedDoc(file)}
+                        onClick={() => setPreviewDoc(file)}
                         className={`glass-card p-4 rounded-2xl flex flex-col justify-between h-36 transition-all cursor-pointer group hover:scale-[1.01] relative ${
                           isSelected ? "border-sky-500 bg-sky-500/5" : "hover:border-sky-500/40"
                         }`}
@@ -790,11 +803,22 @@ export const DocsPage: React.FC = () => {
                                   type="button"
                                   onClick={() => {
                                     setOpenMenuId(null);
+                                    setPreviewDoc(file);
+                                  }}
+                                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-sky-400 hover:text-sky-300 transition font-medium"
+                                >
+                                  <FileText className="w-3.5 h-3.5" />
+                                  <span>Preview File</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenMenuId(null);
                                     setSelectedDoc(file);
                                   }}
                                   className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-muted-foreground hover:text-white transition"
                                 >
-                                  <FileText className="w-3.5 h-3.5 text-sky-400" />
+                                  <FileText className="w-3.5 h-3.5 text-muted-foreground" />
                                   <span>View Details</span>
                                 </button>
                                 <button
@@ -861,7 +885,7 @@ export const DocsPage: React.FC = () => {
                       <div
                         key={file.id}
                         data-testid={`file-row-${file.id}`}
-                        onClick={() => setSelectedDoc(file)}
+                        onClick={() => setPreviewDoc(file)}
                         className={`p-3.5 flex items-center justify-between gap-3 hover:bg-white/5 cursor-pointer transition ${
                           isSelected ? "bg-sky-500/5" : ""
                         }`}
@@ -1029,6 +1053,7 @@ export const DocsPage: React.FC = () => {
       <DocDetailPanel
         item={selectedDoc}
         onClose={() => setSelectedDoc(null)}
+        onOpenPreview={(item) => setPreviewDoc(item)}
         onShowRestrictedToast={(msg) => setRestrictedToast(msg)}
         onToggleStar={async (item) => {
           await fetch("/api/stars", {
@@ -1044,6 +1069,22 @@ export const DocsPage: React.FC = () => {
         }}
         onTrash={async (item) => {
           handleInitiateTrash([item]);
+        }}
+      />
+
+      {/* Interactive In-App Document Preview */}
+      <DocumentPreview
+        item={previewDoc}
+        onClose={() => {
+          setPreviewDoc(null);
+          if (searchParams.has("fileId")) {
+            const next = new URLSearchParams(searchParams);
+            next.delete("fileId");
+            setSearchParams(next, { replace: true });
+          }
+        }}
+        onDownloadOriginal={(item) => {
+          window.open(`/api/drive/file?id=${encodeURIComponent(item.id)}&mode=download`, "_blank");
         }}
       />
     </div>

@@ -48,6 +48,7 @@ interface DocDetailPanelProps {
   onTrash: (item: DocItem) => Promise<void>;
   onUpdateTagsNotes?: (driveId: string, tags: string[], notes: string) => Promise<void>;
   onShowRestrictedToast?: (message: string) => void;
+  onOpenPreview?: (item: DocItem) => void;
 }
 
 export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
@@ -56,6 +57,7 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
   onToggleStar,
   onTrash,
   onShowRestrictedToast,
+  onOpenPreview,
 }) => {
   const { user } = useAuth();
   const canDelete = canUserDelete(user?.role);
@@ -149,7 +151,12 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
       {/* Main Content */}
       <div className="p-5 space-y-6 flex-1">
         {/* Preview / Monogram Box */}
-        <div className="h-44 rounded-2xl bg-gradient-to-b from-white/5 to-white/[0.02] border border-white/10 flex flex-col items-center justify-center relative overflow-hidden group">
+        <div
+          data-testid="doc-detail-preview-box"
+          onClick={() => onOpenPreview?.(item)}
+          className="h-44 rounded-2xl bg-gradient-to-b from-white/5 to-white/[0.02] border border-white/10 flex flex-col items-center justify-center relative overflow-hidden group cursor-pointer hover:border-sky-500/50 transition-colors"
+          title="Click to preview document"
+        >
           {item.thumbnailLink ? (
             <img
               src={item.thumbnailLink}

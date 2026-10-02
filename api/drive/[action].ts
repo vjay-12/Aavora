@@ -29,6 +29,9 @@ import {
 } from "../../src/config/features.js";
 
 function getDriveAction(req: IncomingMessage): string {
+  if ((req as any).query?.action) {
+    return String((req as any).query.action).toLowerCase();
+  }
   const url = new URL(req.url || "", `http://${req.headers.host || "localhost:5173"}`);
   const pathname = url.pathname.toLowerCase();
 
@@ -157,49 +160,221 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       return json(res, { folder });
     }
 
-    // 5. GET /api/drive/file
-    if (action === "file") {
+    // 5. GET /api/drive/file and GET /api/drive/download
+    if (action === "file" || action === "download") {
       const fileId = url.searchParams.get("id");
       if (!fileId) return error(res, "Missing file ID", 400);
 
-      await assertInsideVault(fileId);
-      const file = await getDriveFile(fileId);
-      return json(res, { file });
-    }
+      try {
+        await assertInsideVault(fileId);
+      } catch (vaultErr: any) {
+        const statusCode = vaultErr.statusCode || vaultErr.status || 403;
+        return error(res, vaultErr.message || "Forbidden: File is outside vault", statusCode);
+      }
 
-    // 6. GET /api/drive/download
-    if (action === "download") {
-      const fileId = url.searchParams.get("id");
-      if (!fileId) return error(res, "Missing file ID", 400);
+      let fileMeta: any;
+      try {
+        fileMeta = await getDriveFile(fileId);
+      } catch (metaErr: any) {
+        const statusCode = metaErr.statusCode || metaErr.status || 404;
+        return error(res, metaErr.message || "File not found", statusCode);
+      }
 
-      await assertInsideVault(fileId);
+      if (fileMeta.mimeType === "application/vnd.google-apps.folder") {
+        return error(res, "Cannot stream a folder", 400);
+      }
 
-      const [accessToken, fileMeta] = await Promise.all([
-        getAdminAccessToken(),
-        getDriveFile(fileId),
-      ]);
+      const modeParam = url.searchParams.get("mode");
+      const mode = (modeParam || (action === "download" ? "download" : "view")).toLowerCase();
+
+      // Look up real mimeType from Drive, fallback to extension only if application/octet-stream
+      let realMimeType = (fileMeta.mimeType || "").trim().toLowerCase();
+      if (!realMimeType || realMimeType === "application/octet-stream") {
+        const ext = (fileMeta.name || "").split(".").pop()?.toLowerCase();
+        const extMap: Record<string, string> = {
+          png: "image/png",
+          jpg: "image/jpeg",
+          jpeg: "image/jpeg",
+          webp: "image/webp",
+          gif: "image/gif",
+          svg: "image/svg+xml",
+          pdf: "application/pdf",
+          docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          doc: "application/msword",
+          zip: "application/zip",
+          txt: "text/plain",
+          csv: "text/csv",
+          json: "application/json",
+        };
+        realMimeType = (ext && extMap[ext]) ? extMap[ext] : "application/octet-stream";
+      }
+
+      const isGoogleDoc = realMimeType === "application/vnd.google-apps.document";
+      const isWordDoc =
+        realMimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+        realMimeType === "application/msword" ||
+        (fileMeta.name && /\.(docx|doc)$/i.test(fileMeta.name));
+
+      const accessToken = await getAdminAccessToken();
+
+      // Set base security and caching headers
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("X-Frame-Options", "SAMEORIGIN");
+      res.setHeader("Content-Security-Policy", "frame-ancestors 'self';");
+      res.setHeader("Accept-Ranges", "bytes");
+
+      // WORD & GOOGLE DOCS VIEW MODE: Convert to PDF
+      if (mode === "view" && (isGoogleDoc || isWordDoc)) {
+        if (isGoogleDoc) {
+          try {
+            const exportRes = await fetch(
+              `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=application/pdf`,
+              { headers: { Authorization: `Bearer ${accessToken}` } }
+            );
+            if (!exportRes.ok) {
+              throw new Error(`Google Docs export returned status ${exportRes.status}`);
+            }
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "application/pdf");
+            const cleanName = (fileMeta.name || "document").replace(/\.[^/.]+$/, "") + ".pdf";
+            const encodedName = encodeURIComponent(cleanName);
+            res.setHeader(
+              "Content-Disposition",
+              `inline; filename="${cleanName.replace(/"/g, "")}"; filename*=UTF-8''${encodedName}`
+            );
+
+            const arrayBuf = await exportRes.arrayBuffer();
+            res.setHeader("Content-Length", arrayBuf.byteLength.toString());
+            return res.end(Buffer.from(arrayBuf));
+          } catch (err: any) {
+            console.error("[Drive Export Error]:", err);
+            return error(res, "Word preview conversion unavailable. Please download the original file to view.", 415, {
+              code: "CONVERSION_UNAVAILABLE",
+              fileName: fileMeta.name,
+            });
+          }
+        } else if (isWordDoc) {
+          let tempDocId: string | null = null;
+          try {
+            const copyRes = await fetch(
+              `https://www.googleapis.com/drive/v3/files/${fileId}/copy?supportsAllDrives=true`,
+              {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  mimeType: "application/vnd.google-apps.document",
+                  name: `preview_temp_${Date.now()}`,
+                }),
+              }
+            );
+
+            if (!copyRes.ok) {
+              const errBody = await copyRes.text().catch(() => "");
+              console.warn("[Word Convert Copy Failed]:", copyRes.status, errBody);
+              throw new Error("Copy-conversion not supported for this file format");
+            }
+
+            const copyData = await copyRes.json();
+            tempDocId = copyData.id;
+
+            const exportRes = await fetch(
+              `https://www.googleapis.com/drive/v3/files/${tempDocId}/export?mimeType=application/pdf`,
+              { headers: { Authorization: `Bearer ${accessToken}` } }
+            );
+
+            if (!exportRes.ok) {
+              throw new Error(`Export of converted doc failed with status ${exportRes.status}`);
+            }
+
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "application/pdf");
+            const cleanName = (fileMeta.name || "document").replace(/\.(docx|doc)$/i, "") + ".pdf";
+            const encodedName = encodeURIComponent(cleanName);
+            res.setHeader(
+              "Content-Disposition",
+              `inline; filename="${cleanName.replace(/"/g, "")}"; filename*=UTF-8''${encodedName}`
+            );
+
+            const arrayBuf = await exportRes.arrayBuffer();
+            res.setHeader("Content-Length", arrayBuf.byteLength.toString());
+            return res.end(Buffer.from(arrayBuf));
+          } catch (convertErr: any) {
+            console.error("[Word Conversion Error]:", convertErr);
+            return error(res, "Word preview conversion unavailable. Please download the original file to view.", 415, {
+              code: "CONVERSION_UNAVAILABLE",
+              fileName: fileMeta.name,
+            });
+          } finally {
+            if (tempDocId) {
+              fetch(`https://www.googleapis.com/drive/v3/files/${tempDocId}?supportsAllDrives=true`, {
+                method: "DELETE",
+                headers: { Authorization: `Bearer ${accessToken}` },
+              }).catch(() => {});
+            }
+          }
+        }
+      }
+
+      // STANDARD VIEW OR DOWNLOAD STREAMING
+      const driveHeaders: Record<string, string> = {
+        Authorization: `Bearer ${accessToken}`,
+      };
+
+      const fileSizeNum = fileMeta.size ? parseInt(fileMeta.size, 10) : 0;
+      const MAX_VERCEL_PAYLOAD = 4.5 * 1024 * 1024; // 4.5 MB limit
+
+      // Check if client provided Range header
+      if (req.headers.range) {
+        driveHeaders["Range"] = req.headers.range;
+      } else if (mode === "view" && fileSizeNum > MAX_VERCEL_PAYLOAD) {
+        // If file exceeds 4.5 MB and requested in view mode without Range,
+        // serve initial 4 MB chunk with 206 Partial Content so Vercel limit is never exceeded.
+        driveHeaders["Range"] = "bytes=0-4194303";
+      }
 
       const driveRes = await fetch(
         `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`,
-        { headers: { Authorization: `Bearer ${accessToken}` } }
+        { headers: driveHeaders }
       );
 
-      if (!driveRes.ok) {
-        return error(res, "Failed to download file from Google Drive", driveRes.status);
+      if (!driveRes.ok && driveRes.status !== 206) {
+        return error(res, "Failed to stream file from Google Drive", driveRes.status);
       }
 
-      res.statusCode = 200;
-      res.setHeader("Content-Type", fileMeta.mimeType || "application/octet-stream");
+      res.statusCode = driveRes.status; // 200 or 206
+      res.setHeader("Content-Type", realMimeType);
+
+      const dispositionType = mode === "download" ? "attachment" : "inline";
+      const cleanFilename = (fileMeta.name || "document").replace(/"/g, "");
+      const encodedFilename = encodeURIComponent(fileMeta.name || "document");
       res.setHeader(
         "Content-Disposition",
-        `attachment; filename="${encodeURIComponent(fileMeta.name)}"`
+        `${dispositionType}; filename="${cleanFilename}"; filename*=UTF-8''${encodedFilename}`
       );
-      if (fileMeta.size) {
-        res.setHeader("Content-Length", fileMeta.size);
+
+      if (driveRes.headers.get("content-range")) {
+        res.setHeader("Content-Range", driveRes.headers.get("content-range")!);
+      }
+      if (driveRes.headers.get("content-length")) {
+        res.setHeader("Content-Length", driveRes.headers.get("content-length")!);
       }
 
-      const arrayBuf = await driveRes.arrayBuffer();
-      return res.end(Buffer.from(arrayBuf));
+      if (driveRes.body) {
+        const reader = driveRes.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          res.write(value);
+        }
+        return res.end();
+      } else {
+        const arrayBuf = await driveRes.arrayBuffer();
+        return res.end(Buffer.from(arrayBuf));
+      }
     }
 
     // 7. POST /api/drive/rename

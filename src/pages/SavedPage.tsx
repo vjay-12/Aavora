@@ -2,11 +2,14 @@ import React, { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { listOfflineFiles, getOfflineFile, removeOfflineFile, OfflineFileMeta } from "../lib/offline-crypto";
 import { formatBytes, formatDate } from "../lib/utils";
-import { Star, Shield, Download, Trash2, FileText, ExternalLink, Bookmark } from "lucide-react";
+import { Star, Shield, Download, Trash2, FileText, ExternalLink, Bookmark, Eye } from "lucide-react";
+import { DocumentPreview } from "../components/docs/DocumentPreview";
+import type { DocItem } from "../components/docs/DocDetailPanel";
 
 export const SavedPage: React.FC = () => {
   const [offlineFiles, setOfflineFiles] = useState<OfflineFileMeta[]>([]);
   const [activeTab, setActiveTab] = useState<"all" | "starred" | "offline">("all");
+  const [previewDoc, setPreviewDoc] = useState<DocItem | null>(null);
 
   const loadOffline = async () => {
     const list = await listOfflineFiles();
@@ -118,7 +121,8 @@ export const SavedPage: React.FC = () => {
                 {starredFiles.map((file: any) => (
                   <div
                     key={file.id}
-                    className="glass-card p-3.5 rounded-2xl flex items-center justify-between group hover:border-amber-500/30"
+                    onClick={() => setPreviewDoc(file)}
+                    className="glass-card p-3.5 rounded-2xl flex items-center justify-between group hover:border-amber-500/30 cursor-pointer transition-all"
                   >
                     <div className="flex items-center gap-3 overflow-hidden">
                       <div className="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center flex-shrink-0">
@@ -134,15 +138,24 @@ export const SavedPage: React.FC = () => {
                       </div>
                     </div>
 
-                    <a
-                      href={`/api/drive/download?id=${file.id}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white"
-                      title="Download"
-                    >
-                      <Download className="w-4 h-4" />
-                    </a>
+                    <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        onClick={() => setPreviewDoc(file)}
+                        className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-amber-300 transition-colors"
+                        title="Preview"
+                      >
+                        <Eye className="w-4 h-4" />
+                      </button>
+                      <a
+                        href={`/api/drive/download?id=${file.id}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white transition-colors"
+                        title="Download"
+                      >
+                        <Download className="w-4 h-4" />
+                      </a>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -217,6 +230,13 @@ export const SavedPage: React.FC = () => {
           </section>
         )}
       </div>
+
+      {previewDoc && (
+        <DocumentPreview
+          item={previewDoc}
+          onClose={() => setPreviewDoc(null)}
+        />
+      )}
     </div>
   );
 };
