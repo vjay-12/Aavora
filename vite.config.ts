@@ -49,10 +49,19 @@ function apiDevServerPlugin(): Plugin {
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  server: {
+    port: 5173,
+    hmr: {
+      overlay: false,
+    },
+  },
   plugins: [
     react(),
     apiDevServerPlugin(),
     VitePWA({
+      devOptions: {
+        enabled: false,
+      },
       registerType: "autoUpdate",
       includeAssets: ["favicon.ico", "apple-touch-icon.png", "icon-192.png", "icon-512.png"],
       manifest: {

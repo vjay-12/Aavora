@@ -3,14 +3,11 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./index.css";
 import { restoreQueryCache, persistQueryCache } from "./lib/query-client";
-// Clean up any rogue foreign Service Workers from previous projects on localhost:5173
+// Clean up any stale Service Workers on localhost
 if (typeof navigator !== "undefined" && "serviceWorker" in navigator && window.location.hostname === "localhost") {
   navigator.serviceWorker.getRegistrations().then((registrations) => {
     for (const reg of registrations) {
-      const script = reg.active?.scriptURL || "";
-      if (script.toLowerCase().includes("billflo") || (script && !script.includes("sw.js") && !script.includes("dev-sw.js"))) {
-        reg.unregister();
-      }
+      reg.unregister();
     }
   });
 }
