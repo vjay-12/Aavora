@@ -93,7 +93,7 @@ export function clearSessionCookie(res: ServerResponse) {
 }
 
 /**
- * Mask an email for user-facing security messages (e.g., vhrbaskaran@gmail.com -> v***@gmail.com).
+ * Mask an email for user-facing security messages (e.g., admin@gmail.com -> a***@gmail.com).
  */
 export function maskEmail(email: string): string {
   if (!email || !email.includes("@")) return email;

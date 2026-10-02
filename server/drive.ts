@@ -644,7 +644,7 @@ export async function handleAdminDriveConnectCallback(
     // Must match ADMIN_EMAIL (case-insensitive)
     if (verifiedEmail.toLowerCase() !== env.ADMIN_EMAIL.toLowerCase()) {
       console.error(
-        `[Admin Drive OAuth] Email mismatch. Expected ${env.ADMIN_EMAIL}, got ${verifiedEmail}`
+        "[Admin Drive OAuth] Email mismatch: authenticated Google account is not the configured admin."
       );
       const maskedAdmin = maskEmail(env.ADMIN_EMAIL);
       const msg = `Please connect with ${maskedAdmin}`;

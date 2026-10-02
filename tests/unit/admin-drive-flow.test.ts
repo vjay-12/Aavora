@@ -42,8 +42,8 @@ describe("Admin Drive Flow: Crypto, Security & Vault Boundaries", () => {
   });
 
   it("maskEmail masks local part correctly", () => {
-    expect(maskEmail("vhrbaskaran@gmail.com")).toBe("v***@gmail.com");
-    expect(maskEmail("sairamyabaskaran@gmail.com")).toBe("s***@gmail.com");
+    expect(maskEmail("vaultadmin@gmail.com")).toBe("v***@gmail.com");
+    expect(maskEmail("familymember@gmail.com")).toBe("f***@gmail.com");
     expect(maskEmail("a@domain.com")).toBe("a***@domain.com");
   });
 
