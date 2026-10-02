@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { encryptSecret, decryptSecret } from "../../api/_utils/crypto.js";
+import { encryptSecret, decryptSecret } from "../../server/crypto.js";
 import {
   AdminDriveError,
   isInsideVault,
   assertInsideVault,
-} from "../../api/_utils/drive.js";
+} from "../../server/drive.js";
 
 describe("Admin Drive Flow: Crypto, Security & Vault Boundaries", () => {
   it("encryptSecret and decryptSecret successfully round-trip a refresh token", () => {
@@ -48,8 +48,8 @@ describe("Admin Drive Flow: Crypto, Security & Vault Boundaries", () => {
   });
 
   it("Admin connect endpoint rejects unauthenticated and non-admin users with 401/403", async () => {
-    const connectHandler = (await import("../../api/admin/drive/connect.js")).default;
-    const { getEnv } = await import("../../api/_utils/env.js");
+    const connectHandler = (await import("../../api/admin/[action].js")).default;
+    const { getEnv } = await import("../../server/env.js");
     const env = getEnv();
     const memberEmail = env.ALLOWED_EMAILS.find((e) => e.toLowerCase() !== env.ADMIN_EMAIL.toLowerCase()) || "sairamyabaskaran@gmail.com";
 
@@ -72,13 +72,16 @@ describe("Admin Drive Flow: Crypto, Security & Vault Boundaries", () => {
     };
 
     // 1. Unauthenticated request
-    const unauthReq: any = { headers: {} };
+    const unauthReq: any = {
+      url: "/api/admin/drive/connect",
+      headers: { host: "localhost:5173" },
+    };
     const unauthRes = createFakeRes();
     await connectHandler(unauthReq, unauthRes);
     expect(unauthRes.statusCode).toBe(401);
 
     // 2. Member request (authenticated active member trying to access admin connect)
-    const { createSessionToken } = await import("../../api/_utils/auth.js");
+    const { createSessionToken } = await import("../../server/auth.js");
     const memberToken = await createSessionToken({
       id: 2,
       email: memberEmail,
@@ -87,7 +90,8 @@ describe("Admin Drive Flow: Crypto, Security & Vault Boundaries", () => {
     });
 
     const memberReq: any = {
-      headers: { cookie: `aavora_session=${memberToken}` },
+      url: "/api/admin/drive/connect",
+      headers: { cookie: `aavora_session=${memberToken}`, host: "localhost:5173" },
     };
     const memberRes = createFakeRes();
     await connectHandler(memberReq, memberRes);
@@ -95,9 +99,9 @@ describe("Admin Drive Flow: Crypto, Security & Vault Boundaries", () => {
   });
 
   it("Member cannot access any /api/admin/* endpoints", async () => {
-    const usersHandler = (await import("../../api/admin/users.js")).default;
-    const { createSessionToken } = await import("../../api/_utils/auth.js");
-    const { getEnv } = await import("../../api/_utils/env.js");
+    const adminHandler = (await import("../../api/admin/[action].js")).default;
+    const { createSessionToken } = await import("../../server/auth.js");
+    const { getEnv } = await import("../../server/env.js");
     const env = getEnv();
     const memberEmail = env.ALLOWED_EMAILS.find((e) => e.toLowerCase() !== env.ADMIN_EMAIL.toLowerCase()) || "sairamyabaskaran@gmail.com";
 
@@ -124,18 +128,19 @@ describe("Admin Drive Flow: Crypto, Security & Vault Boundaries", () => {
     });
 
     const fakeReq: any = {
-      headers: { cookie: `aavora_session=${memberToken}` },
+      url: "/api/admin/users",
+      headers: { cookie: `aavora_session=${memberToken}`, host: "localhost:5173" },
       method: "GET",
     };
 
-    await usersHandler(fakeReq, fakeRes);
+    await adminHandler(fakeReq, fakeRes);
     expect(code).toBe(403);
   });
 
   it("GET /api/drive/list rejects foreign folderId outside the vault with 403", async () => {
-    const listHandler = (await import("../../api/drive/list.js")).default;
-    const { createSessionToken } = await import("../../api/_utils/auth.js");
-    const { getEnv } = await import("../../api/_utils/env.js");
+    const driveHandler = (await import("../../api/drive/[action].js")).default;
+    const { createSessionToken } = await import("../../server/auth.js");
+    const { getEnv } = await import("../../server/env.js");
     const env = getEnv();
     const memberEmail = env.ALLOWED_EMAILS.find((e) => e.toLowerCase() !== env.ADMIN_EMAIL.toLowerCase()) || "sairamyabaskaran@gmail.com";
 
@@ -169,7 +174,7 @@ describe("Admin Drive Flow: Crypto, Security & Vault Boundaries", () => {
       headers: { cookie: `aavora_session=${token}`, host: "localhost:5173" },
     };
 
-    await listHandler(fakeReq, fakeRes);
+    await driveHandler(fakeReq, fakeRes);
     // 'root' is outside the vault tree, must return 403 Forbidden
     expect(code).toBe(403);
   });

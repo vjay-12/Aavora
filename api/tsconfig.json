@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["./**/*.ts", "../src/db/**/*.ts"]
+  "include": ["./**/*.ts", "../server/**/*.ts"]
 }

@@ -24,6 +24,26 @@ function apiDevServerPlugin(): Plugin {
           targetFile = path.resolve(import.meta.dirname, `.${pathname}/index.ts`);
         }
 
+        // Map to consolidated catch-all handlers
+        if (!fs.existsSync(targetFile)) {
+          if (
+            pathname.startsWith("/api/auth/") ||
+            pathname === "/api/callback" ||
+            pathname === "/api/logout" ||
+            pathname === "/api/me"
+          ) {
+            targetFile = path.resolve(import.meta.dirname, "./api/auth/[action].ts");
+          } else if (pathname.startsWith("/api/drive/") || pathname.startsWith("/api/upload/")) {
+            targetFile = path.resolve(import.meta.dirname, "./api/drive/[action].ts");
+          } else if (pathname.startsWith("/api/admin/")) {
+            targetFile = path.resolve(import.meta.dirname, "./api/admin/[action].ts");
+          } else if (pathname.startsWith("/api/activity")) {
+            targetFile = path.resolve(import.meta.dirname, "./api/activity/[action].ts");
+          } else if (pathname.startsWith("/api/stars")) {
+            targetFile = path.resolve(import.meta.dirname, "./api/stars/[action].ts");
+          }
+        }
+
         if (fs.existsSync(targetFile)) {
           try {
             const module = await server.ssrLoadModule(targetFile);

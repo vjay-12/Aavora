@@ -1,8 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { authenticateRequest } from "./_utils/auth.js";
-import { json, error } from "./_utils/response.js";
-import { db } from "../src/db/index.js";
-import { activity } from "../src/db/schema.js";
+import { authenticateRequest } from "../../server/auth.js";
+import { json, error } from "../../server/response.js";
+import { db } from "../../server/db/index.js";
+import { activity } from "../../server/db/schema.js";
 import { desc, eq, and, lt } from "drizzle-orm";
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
@@ -18,7 +18,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     const conditions = [];
 
-    if (actionFilter && actionFilter !== "all") {
+    if (actionFilter && actionFilter !== "all" && actionFilter !== "index") {
       conditions.push(eq(activity.action, actionFilter as any));
     }
     if (userFilter && userFilter !== "all") {
@@ -28,7 +28,6 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       conditions.push(lt(activity.createdAt, new Date(cursor)));
     }
 
-    // Single indexed query as per Neon speed plan
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
     const items = await db

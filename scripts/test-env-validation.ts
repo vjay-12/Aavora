@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { validateEnv } from "../api/_utils/env";
+import { validateEnv } from "../server/env";
 
 const REQUIRED_VARS = [
   "DATABASE_URL",

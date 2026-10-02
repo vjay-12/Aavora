@@ -1,7 +1,7 @@
 import "dotenv/config";
-import { getEnv } from "../api/_utils/env";
-import { createSessionToken, COOKIE_NAME } from "../api/_utils/auth";
-import { resetRateLimits } from "../api/_utils/rate-limit";
+import { getEnv } from "../server/env.js";
+import { createSessionToken, COOKIE_NAME } from "../server/auth.js";
+import { resetRateLimits } from "../server/rate-limit.js";
 import { EncryptJWT } from "jose";
 
 const BASE_URL = "http://localhost:5173";
@@ -37,8 +37,6 @@ export async function testAuthAndSecurity() {
     email: env.ADMIN_EMAIL,
     name: "Admin User",
     role: "admin",
-    accessToken: "ya29.sample_valid_looking_token",
-    accessTokenExpiresAt: Date.now() + 3600000,
   });
   const tamperedToken = validToken.slice(0, -10) + "tampered00";
   const resTampered = await fetch(`${BASE_URL}/api/me`, {
@@ -53,7 +51,6 @@ export async function testAuthAndSecurity() {
     email: env.ADMIN_EMAIL,
     name: "Admin User",
     role: "admin",
-    accessToken: "ya29.sample_token",
   })
     .setProtectedHeader({ alg: "dir", enc: "A256GCM" })
     .setIssuedAt(Math.floor(Date.now() / 1000) - 3600)
@@ -65,7 +62,7 @@ export async function testAuthAndSecurity() {
   });
   assert(resExpired.status === 401, "/api/me returns 401 with an expired cookie");
 
-  // 4. Login redirect contains correct params (client_id, redirect_uri, scope, access_type=offline, prompt=consent, state)
+  // 4. Login redirect contains correct params (client_id, redirect_uri, scope, state)
   console.log("\n2. Testing /api/auth/login OAuth parameters...");
   const loginRes = await fetch(`${BASE_URL}/api/auth/login`, { redirect: "manual" });
   const locationHeader = loginRes.headers.get("location") || "";
@@ -77,10 +74,8 @@ export async function testAuthAndSecurity() {
   const loginUrl = new URL(locationHeader);
   assert(loginUrl.searchParams.get("client_id") === env.GOOGLE_CLIENT_ID, "Redirect contains correct client_id");
   assert(loginUrl.searchParams.get("redirect_uri") === env.GOOGLE_REDIRECT_URI, "Redirect contains correct redirect_uri");
-  assert(loginUrl.searchParams.get("access_type") === "offline", "Redirect contains access_type=offline");
-  assert(loginUrl.searchParams.get("prompt") === "consent", "Redirect contains prompt=consent");
   assert(Boolean(loginUrl.searchParams.get("state")), "Redirect contains random state parameter");
-  assert(loginUrl.searchParams.get("scope")?.includes("drive") === true, "Redirect scope includes drive");
+  assert(loginUrl.searchParams.get("scope")?.includes("email") === true, "Redirect scope includes email");
 
   // 5. Callback rejects invalid or missing state or code
   console.log("\n3. Testing OAuth callback validation...");

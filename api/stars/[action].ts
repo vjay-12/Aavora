@@ -1,10 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { authenticateRequest } from "./_utils/auth.js";
-import { json, error, parseJsonBody } from "./_utils/response.js";
-import { db } from "../src/db/index.js";
-import { stars } from "../src/db/schema.js";
+import { authenticateRequest } from "../../server/auth.js";
+import { json, error, parseJsonBody } from "../../server/response.js";
+import { db } from "../../server/db/index.js";
+import { stars } from "../../server/db/schema.js";
 import { and, eq } from "drizzle-orm";
-import { getDriveFile, assertInsideVault } from "./_utils/drive.js";
+import { getDriveFile, assertInsideVault } from "../../server/drive.js";
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   try {
@@ -43,13 +43,23 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     }
 
     if (req.method === "POST") {
-      const body = await parseJsonBody<{ driveId: string }>(req);
+      const body = await parseJsonBody<{ driveId: string; isStarred?: boolean }>(req);
       if (!body.driveId) return error(res, "driveId is required", 400);
 
       try {
         await assertInsideVault(body.driveId);
       } catch {
         return error(res, "Forbidden: Item is outside the family vault", 403);
+      }
+
+      // Support toggle if isStarred is passed
+      if (body.isStarred === false) {
+        await db
+          .delete(stars)
+          .where(
+            and(eq(stars.userId, session.email), eq(stars.driveId, body.driveId))
+          );
+        return json(res, { success: true, starred: false });
       }
 
       await db
@@ -78,6 +88,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     return error(res, "Method not allowed", 405);
   } catch (err: any) {
-    return error(res, err.message || "Failed to process stars request", 500);
+    console.error("Stars operation error:", err);
+    return error(res, err.message || "Failed to process star operation", 500);
   }
 }

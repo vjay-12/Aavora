@@ -48,37 +48,41 @@ export function validateEnv(customEnv: Record<string, string | undefined> = proc
     );
   }
 
-  // Session secret length check
   const sessionSecret = (customEnv.SESSION_SECRET || "").trim();
   if (sessionSecret.length < 32) {
     throw new Error(
-      `[Aavora Configuration Error] SESSION_SECRET must be at least 32 characters long for AES-256-GCM encryption (current length: ${sessionSecret.length}).`
+      "[Aavora Configuration Error] SESSION_SECRET must be at least 32 characters long for secure AES-256-GCM encryption."
     );
   }
 
-  const allowedEmailsRaw = customEnv.ALLOWED_EMAILS || "";
-  const allowedEmails = allowedEmailsRaw
+  const rawAllowed = customEnv.ALLOWED_EMAILS || "";
+  const allowedList = rawAllowed
     .split(",")
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean);
 
+  const adminEmail = (customEnv.ADMIN_EMAIL || "").trim().toLowerCase();
+  if (!allowedList.includes(adminEmail)) {
+    allowedList.push(adminEmail);
+  }
+
   return {
-    DATABASE_URL: (customEnv.DATABASE_URL || "").trim(),
-    GOOGLE_CLIENT_ID: (customEnv.GOOGLE_CLIENT_ID || "").trim(),
-    GOOGLE_CLIENT_SECRET: (customEnv.GOOGLE_CLIENT_SECRET || "").trim(),
-    GOOGLE_REDIRECT_URI: (customEnv.GOOGLE_REDIRECT_URI || "").trim(),
-    GOOGLE_DRIVE_ROOT_FOLDER_ID: (customEnv.GOOGLE_DRIVE_ROOT_FOLDER_ID || "").trim(),
-    ADMIN_EMAIL: (customEnv.ADMIN_EMAIL || "").trim().toLowerCase(),
-    ALLOWED_EMAILS: allowedEmails,
+    DATABASE_URL: customEnv.DATABASE_URL!.trim(),
+    GOOGLE_CLIENT_ID: customEnv.GOOGLE_CLIENT_ID!.trim(),
+    GOOGLE_CLIENT_SECRET: customEnv.GOOGLE_CLIENT_SECRET!.trim(),
+    GOOGLE_REDIRECT_URI: customEnv.GOOGLE_REDIRECT_URI!.trim(),
+    GOOGLE_DRIVE_ROOT_FOLDER_ID: customEnv.GOOGLE_DRIVE_ROOT_FOLDER_ID!.trim(),
+    ADMIN_EMAIL: adminEmail,
+    ALLOWED_EMAILS: allowedList,
     SESSION_SECRET: sessionSecret,
-    APP_URL: (customEnv.APP_URL || "http://localhost:5173").trim(),
-    GOOGLE_ADMIN_REFRESH_TOKEN: customEnv.GOOGLE_ADMIN_REFRESH_TOKEN?.trim() || undefined,
+    APP_URL: (customEnv.APP_URL || "http://localhost:5173").trim().replace(/\/$/, ""),
+    GOOGLE_ADMIN_REFRESH_TOKEN: customEnv.GOOGLE_ADMIN_REFRESH_TOKEN?.trim(),
   };
 }
 
 export function getEnv(): EnvConfig {
   if (!cachedEnv) {
-    cachedEnv = validateEnv();
+    cachedEnv = validateEnv(process.env);
   }
   return cachedEnv;
 }

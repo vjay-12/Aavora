@@ -1,27 +1,17 @@
 import "dotenv/config";
 import fs from "fs";
 import path from "path";
-import { getEnv } from "../api/_utils/env";
-import { createSessionToken, COOKIE_NAME } from "../api/_utils/auth";
-import { getAdminAccessToken } from "../api/_utils/drive";
+import { getEnv } from "../server/env.js";
+import { createSessionToken, COOKIE_NAME } from "../server/auth.js";
 
 export async function generateAuthState() {
   const env = getEnv();
-  let liveAccessToken = "mock_qa_token_for_playwright";
-  try {
-    liveAccessToken = await getAdminAccessToken();
-  } catch (err: any) {
-    console.warn("Could not get live access token:", err.message);
-  }
 
   const token = await createSessionToken({
     id: 1,
     email: env.ADMIN_EMAIL,
     name: "Admin User",
     role: "admin",
-    accessToken: liveAccessToken,
-    refreshToken: env.GOOGLE_ADMIN_REFRESH_TOKEN,
-    accessTokenExpiresAt: Date.now() + 3500 * 1000,
   });
 
   const authDir = path.resolve(import.meta.dirname, "../playwright/.auth");

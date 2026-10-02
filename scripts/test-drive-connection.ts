@@ -1,7 +1,8 @@
 import "dotenv/config";
-import { getEnv } from "../api/_utils/env";
-import { createSessionToken, verifySessionToken, COOKIE_NAME } from "../api/_utils/auth";
-import driveListHandler from "../api/drive/list";
+import { getEnv } from "../server/env.js";
+import { createSessionToken, COOKIE_NAME } from "../server/auth.js";
+import driveListHandler from "../api/drive/[action].js";
+import { invalidateAdminTokenCache, invalidateVaultCache } from "../server/drive.js";
 import { EventEmitter } from "events";
 
 export async function testDriveConnection() {
@@ -22,6 +23,9 @@ export async function testDriveConnection() {
       totalFailed++;
     }
   }
+
+  // Ensure test environment has a mock admin refresh token fallback
+  process.env.GOOGLE_ADMIN_REFRESH_TOKEN = process.env.GOOGLE_ADMIN_REFRESH_TOKEN || "mock_admin_refresh_token_for_tests";
 
   // Helper to create mock HTTP request and response
   function createMockHttp(url: string, cookieToken?: string) {
@@ -74,8 +78,6 @@ export async function testDriveConnection() {
     email: env.ADMIN_EMAIL,
     name: "Admin User",
     role: "admin",
-    accessToken: "mock_valid_drive_token",
-    accessTokenExpiresAt: Date.now() + 3600000,
   });
 
   // Mock global fetch to spy and simulate Google Drive API
@@ -101,22 +103,34 @@ export async function testDriveConnection() {
     },
     {
       id: "file-abc-789",
-      name: "Insurance.pdf",
+      name: "Bank_Statement_2026.pdf",
       mimeType: "application/pdf",
       size: "1024000",
-      modifiedTime: "2026-08-15T08:00:00Z",
+      modifiedTime: "2026-09-03T15:30:00Z",
       lastModifyingUser: { displayName: "Vijay Baskaran" },
       parents: [env.GOOGLE_DRIVE_ROOT_FOLDER_ID],
     },
   ];
 
   try {
+    invalidateAdminTokenCache();
+    invalidateVaultCache();
+
     // TEST 1: Root Drive list call
     console.log("1. Testing GET /api/drive/list on root folder...");
     driveRequestCount = 0;
 
     global.fetch = async (input: any, init?: any) => {
       const urlStr = typeof input === "string" ? input : input.url;
+      if (urlStr.includes("oauth2.googleapis.com/token")) {
+        return new Response(
+          JSON.stringify({
+            access_token: "mock_test_access_token",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
       if (urlStr.includes("googleapis.com/drive/v3/files")) {
         driveRequestCount++;
         return new Response(
@@ -166,6 +180,15 @@ export async function testDriveConnection() {
     console.log("\n3. Testing boundary check: Folder outside root tree...");
     global.fetch = async (input: any, init?: any) => {
       const urlStr = typeof input === "string" ? input : input.url;
+      if (urlStr.includes("oauth2.googleapis.com/token")) {
+        return new Response(
+          JSON.stringify({
+            access_token: "mock_test_access_token",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
       // files/{folderId} inspect call
       if (urlStr.includes("googleapis.com/drive/v3/files/foreign-folder-outside-tree")) {
         return new Response(
@@ -193,6 +216,15 @@ export async function testDriveConnection() {
     console.log("\n4. Testing invalid folderId (404 handling)...");
     global.fetch = async (input: any, init?: any) => {
       const urlStr = typeof input === "string" ? input : input.url;
+      if (urlStr.includes("oauth2.googleapis.com/token")) {
+        return new Response(
+          JSON.stringify({
+            access_token: "mock_test_access_token",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
       if (urlStr.includes("googleapis.com/drive/v3/files/nonexistent-folder-id")) {
         return new Response(
           JSON.stringify({ error: { message: "File not found: nonexistent-folder-id", code: 404 } }),
@@ -207,13 +239,14 @@ export async function testDriveConnection() {
     const res404 = await mock404.waitFinish();
     assert(res404.status === 404, "Invalid folderId returns 404 Not Found");
 
-    // TEST 5: Expired access token triggers silent refresh
-    console.log("\n5. Testing expired access token (silent refresh)...");
-    let refreshEndpointCalled = false;
+    // TEST 5: Silent token retrieval / caching
+    console.log("\n5. Testing admin token retrieval and refresh...");
+    invalidateAdminTokenCache();
+    let tokenEndpointCalled = false;
     global.fetch = async (input: any, init?: any) => {
       const urlStr = typeof input === "string" ? input : input.url;
       if (urlStr.includes("oauth2.googleapis.com/token")) {
-        refreshEndpointCalled = true;
+        tokenEndpointCalled = true;
         return new Response(
           JSON.stringify({
             access_token: "newly_refreshed_google_access_token",
@@ -231,27 +264,16 @@ export async function testDriveConnection() {
       return originalFetch(input, init);
     };
 
-    const expiredTokenWithRefresh = await createSessionToken({
-      id: 1,
-      email: env.ADMIN_EMAIL,
-      name: "Admin User",
-      role: "admin",
-      accessToken: "expired_token",
-      refreshToken: "valid_refresh_token",
-      accessTokenExpiresAt: Date.now() - 5000, // Expired 5 seconds ago
-    });
-
-    const mockRefresh = createMockHttp("/api/drive/list", expiredTokenWithRefresh);
+    const mockRefresh = createMockHttp("/api/drive/list", validSession);
     driveListHandler(mockRefresh.req, mockRefresh.res);
     const refreshResult = await mockRefresh.waitFinish();
 
-    assert(refreshResult.status === 200, "Request with expired token succeeds after silent refresh");
-    assert(refreshEndpointCalled, "Google token endpoint was called to refresh access token");
-    const setCookie = mockRefresh.res.getHeader("set-cookie");
-    assert(Boolean(setCookie), "Response sets new encrypted session cookie with refreshed token");
+    assert(refreshResult.status === 200, "Request succeeds with admin drive token");
+    assert(tokenEndpointCalled, "Google token endpoint was called to retrieve admin access token");
 
-    // TEST 6: Revoked or invalid refresh token cleans session and redirects to login (401)
-    console.log("\n6. Testing revoked refresh token with expired token...");
+    // TEST 6: Revoked or invalid admin refresh token returns 503 ADMIN_DRIVE_NOT_CONNECTED
+    console.log("\n6. Testing revoked admin refresh token...");
+    invalidateAdminTokenCache();
     global.fetch = async (input: any, init?: any) => {
       const urlStr = typeof input === "string" ? input : input.url;
       if (urlStr.includes("oauth2.googleapis.com/token")) {
@@ -266,19 +288,20 @@ export async function testDriveConnection() {
       return originalFetch(input, init);
     };
 
-    const mockRevoked = createMockHttp("/api/drive/list", expiredTokenWithRefresh);
+    const mockRevoked = createMockHttp("/api/drive/list", validSession);
     driveListHandler(mockRevoked.req, mockRevoked.res);
     const revokedResult = await mockRevoked.waitFinish();
 
-    assert(revokedResult.status === 401, "Revoked refresh token returns 401 Unauthorized");
-    const revokedCookie = mockRevoked.res.getHeader("set-cookie") || "";
+    assert(revokedResult.status === 503, "Revoked admin token returns 503 Service Unavailable");
     assert(
-      revokedCookie.includes(`${COOKIE_NAME}=;`) && revokedCookie.includes("Max-Age=0"),
-      "Revoked session clears session cookie (clean redirect to login)"
+      revokedResult.body?.code === "ADMIN_DRIVE_NOT_CONNECTED",
+      "Revoked admin token returns error code ADMIN_DRIVE_NOT_CONNECTED"
     );
 
   } finally {
     global.fetch = originalFetch;
+    invalidateAdminTokenCache();
+    invalidateVaultCache();
   }
 
   console.log("\n=================================================");

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { formatBytes, formatDate, cn } from "../../src/lib/utils";
-import { validateEnv } from "../../api/_utils/env";
-import { createSessionToken, verifySessionToken } from "../../api/_utils/auth";
+import { validateEnv } from "../../server/env";
+import { createSessionToken, verifySessionToken } from "../../server/auth";
 
 describe("Unit Tests: Formatters & Utilities", () => {
   it("formatBytes correctly formats file sizes", () => {

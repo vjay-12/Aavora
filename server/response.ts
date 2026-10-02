@@ -14,11 +14,11 @@ export function json(res: ServerResponse, data: unknown, status = 200) {
   res.end(JSON.stringify(data));
 }
 
-export function error(res: ServerResponse, message: string, status = 400) {
+export function error(res: ServerResponse, message: string, status = 400, extra?: Record<string, unknown>) {
   setSecurityHeaders(res);
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json");
-  res.end(JSON.stringify({ error: message, status }));
+  res.end(JSON.stringify({ error: message, status, ...extra }));
 }
 
 export async function parseJsonBody<T = unknown>(req: any): Promise<T> {
@@ -39,28 +39,21 @@ export async function parseJsonBody<T = unknown>(req: any): Promise<T> {
 
   return new Promise((resolve) => {
     let body = "";
-    const timer = setTimeout(() => {
-      try {
-        resolve(body ? JSON.parse(body) : ({} as T));
-      } catch {
+    req.on("data", (chunk: any) => {
+      body += chunk;
+      if (body.length > 5 * 1024 * 1024) {
+        // Guard against overly large JSON payloads
+        req.destroy();
         resolve({} as T);
       }
-    }, 2000);
-
-    req.on("data", (chunk: Buffer) => {
-      body += chunk.toString();
     });
     req.on("end", () => {
-      clearTimeout(timer);
       try {
-        resolve(body ? JSON.parse(body) : ({} as T));
+        resolve(body ? (JSON.parse(body) as T) : ({} as T));
       } catch {
         resolve({} as T);
       }
     });
-    req.on("error", () => {
-      clearTimeout(timer);
-      resolve({} as T);
-    });
+    req.on("error", () => resolve({} as T));
   });
 }

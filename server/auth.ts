@@ -1,6 +1,6 @@
 import { EncryptJWT, jwtDecrypt } from "jose";
-import { db } from "../../src/db/index.js";
-import { users } from "../../src/db/schema.js";
+import { db } from "./db/index.js";
+import { users } from "./db/schema.js";
 import { eq } from "drizzle-orm";
 import { getEnv } from "./env.js";
 import type { IncomingMessage, ServerResponse } from "http";

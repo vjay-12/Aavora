@@ -1,5 +1,5 @@
-import { db } from "../../src/db/index.js";
-import { settings } from "../../src/db/schema.js";
+import { db } from "./db/index.js";
+import { settings } from "./db/schema.js";
 import { eq } from "drizzle-orm";
 import { decryptSecret } from "./crypto.js";
 import { getEnv } from "./env.js";
@@ -160,6 +160,12 @@ export async function isInsideVault(id: string, token?: string): Promise<boolean
     );
 
     if (!res.ok) {
+      if (res.status === 404) {
+        const notFoundErr: any = new Error(`Item ${currentId} not found in Google Drive.`);
+        notFoundErr.statusCode = 404;
+        notFoundErr.status = 404;
+        throw notFoundErr;
+      }
       return false;
     }
 
@@ -218,104 +224,111 @@ export interface DriveItem {
 
 /**
  * Lists files and folders under a folder in the vault.
- * Defaults to DRIVE_ROOT_FOLDER_ID and verifies ancestry.
+ * Always asserts the folder is within DRIVE_ROOT_FOLDER_ID.
  */
 export async function listDriveItems(
   folderId?: string,
-  searchQuery?: string,
-  trashed = false
-): Promise<{ files: DriveItem[]; nextPageToken?: string; folderName?: string }> {
-  const targetFolder = folderId || getVaultRootId();
-  await assertInsideVault(targetFolder);
+  pageSize = 100,
+  pageToken?: string
+): Promise<{
+  files: DriveItem[];
+  nextPageToken?: string;
+  currentFolderId: string;
+}> {
+  const rootId = getVaultRootId();
+  const targetFolderId = folderId || rootId;
+
+  // Enforce root boundary
+  await assertInsideVault(targetFolderId);
 
   const accessToken = await getAdminAccessToken();
+  const q = `'${targetFolderId}' in parents and trashed = false`;
+  const fields =
+    "nextPageToken, files(id, name, mimeType, size, modifiedTime, createdTime, owners, appProperties, thumbnailLink, iconLink, webViewLink, webContentLink, parents, trashed)";
 
-  let q = `'${targetFolder}' in parents and trashed = ${trashed}`;
-  if (searchQuery) {
-    q = `name contains '${searchQuery.replace(/'/g, "\\'")}' and trashed = ${trashed}`;
+  const url = new URL("https://www.googleapis.com/drive/v3/files");
+  url.searchParams.set("q", q);
+  url.searchParams.set("fields", fields);
+  url.searchParams.set("pageSize", String(Math.min(pageSize, 100)));
+  url.searchParams.set("supportsAllDrives", "true");
+  url.searchParams.set("includeItemsFromAllDrives", "true");
+  url.searchParams.set("orderBy", "folder,name");
+  if (pageToken) url.searchParams.set("pageToken", pageToken);
+
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error?.message || "Failed to list Google Drive files");
   }
 
-  const allFiles: DriveItem[] = [];
-  let pageToken: string | undefined = undefined;
-
-  do {
-    const params = new URLSearchParams({
-      q,
-      fields:
-        "nextPageToken, files(id, name, mimeType, size, modifiedTime, createdTime, owners, appProperties, thumbnailLink, iconLink, webViewLink, webContentLink, parents, trashed)",
-      pageSize: "100",
-      orderBy: "folder,name",
-      supportsAllDrives: "true",
-      includeItemsFromAllDrives: "true",
-    });
-    if (pageToken) {
-      params.set("pageToken", pageToken);
+  // Cache targetFolderId and returned folders as verified
+  const now = Date.now();
+  verifiedFolderIds.set(targetFolderId, now);
+  if (Array.isArray(data.files)) {
+    for (const f of data.files) {
+      if (f.mimeType === "application/vnd.google-apps.folder") {
+        verifiedFolderIds.set(f.id, now);
+      }
     }
+  }
 
-    const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error?.message || "Failed to list Google Drive files");
-    }
-
-    if (Array.isArray(data.files)) {
-      allFiles.push(...data.files);
-    }
-    pageToken = data.nextPageToken;
-  } while (pageToken);
-
-  return { files: allFiles };
+  return {
+    files: data.files || [],
+    nextPageToken: data.nextPageToken,
+    currentFolderId: targetFolderId,
+  };
 }
 
 /**
- * Fetches file metadata, asserting it is inside the vault.
+ * Gets a file by ID, enforcing that it is inside the vault.
  */
 export async function getDriveFile(fileId: string): Promise<DriveItem> {
   await assertInsideVault(fileId);
 
   const accessToken = await getAdminAccessToken();
-  const params = new URLSearchParams({
-    fields:
-      "id, name, mimeType, size, modifiedTime, createdTime, owners, appProperties, thumbnailLink, iconLink, webViewLink, webContentLink, parents, trashed",
-    supportsAllDrives: "true",
-  });
+  const fields =
+    "id, name, mimeType, size, modifiedTime, createdTime, owners, appProperties, thumbnailLink, iconLink, webViewLink, webContentLink, parents, trashed";
 
   const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${fileId}?${params.toString()}`,
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=${encodeURIComponent(
+      fields
+    )}&supportsAllDrives=true`,
     {
       headers: { Authorization: `Bearer ${accessToken}` },
     }
   );
 
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error?.message || "File not found");
+  if (!res.ok) throw new Error(data.error?.message || "Failed to get file from Google Drive");
   return data;
 }
 
 /**
- * Creates a folder inside parentId (defaults to vault root), asserting parent is in vault.
+ * Creates a folder inside a parent folder in the vault.
  */
 export async function createDriveFolder(
   name: string,
   parentId?: string,
-  appProperties?: Record<string, string>
+  color?: string
 ): Promise<DriveItem> {
-  const parent = parentId || getVaultRootId();
-  await assertInsideVault(parent);
+  const rootId = getVaultRootId();
+  const targetParent = parentId || rootId;
+
+  // Boundary check: must be inside root
+  await assertInsideVault(targetParent);
 
   const accessToken = await getAdminAccessToken();
-
   const body: Record<string, unknown> = {
     name,
     mimeType: "application/vnd.google-apps.folder",
-    parents: [parent],
+    parents: [targetParent],
   };
 
-  if (appProperties) {
-    body.appProperties = appProperties;
+  if (color) {
+    body.appProperties = { folderColor: color };
   }
 
   const res = await fetch("https://www.googleapis.com/drive/v3/files?supportsAllDrives=true", {
@@ -330,21 +343,21 @@ export async function createDriveFolder(
   const data = await res.json();
   if (!res.ok) throw new Error(data.error?.message || "Failed to create folder");
 
-  // Cache new folder as verified
+  // Cache newly created folder as verified
   verifiedFolderIds.set(data.id, Date.now());
 
   return data;
 }
 
 /**
- * Renames an item inside the vault.
+ * Renames a Drive file or folder in the vault.
  */
-export async function renameDriveItem(fileId: string, newName: string): Promise<DriveItem> {
-  await assertInsideVault(fileId);
-
+export async function renameDriveItem(itemId: string, newName: string): Promise<DriveItem> {
+  await assertInsideVault(itemId);
   const accessToken = await getAdminAccessToken();
+
   const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`,
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(itemId)}?supportsAllDrives=true`,
     {
       method: "PATCH",
       headers: {
@@ -361,32 +374,33 @@ export async function renameDriveItem(fileId: string, newName: string): Promise<
 }
 
 /**
- * Moves an item inside the vault (asserts file and both parents are inside the vault).
+ * Moves a Drive file or folder to a new parent within the vault.
  */
 export async function moveDriveItem(
-  fileId: string,
+  itemId: string,
   newParentId: string,
-  oldParentId: string
+  currentParentId?: string
 ): Promise<DriveItem> {
-  await assertInsideVault(fileId);
+  await assertInsideVault(itemId);
   await assertInsideVault(newParentId);
-  await assertInsideVault(oldParentId);
 
   const accessToken = await getAdminAccessToken();
-  const params = new URLSearchParams({
-    addParents: newParentId,
-    removeParents: oldParentId,
-    enforceSingleParent: "true",
-    supportsAllDrives: "true",
-  });
+  let removeParents = currentParentId;
 
-  const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${fileId}?${params.toString()}`,
-    {
-      method: "PATCH",
-      headers: { Authorization: `Bearer ${accessToken}` },
-    }
-  );
+  if (!removeParents) {
+    const file = await getDriveFile(itemId);
+    removeParents = file.parents?.join(",");
+  }
+
+  const url = new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(itemId)}`);
+  url.searchParams.set("addParents", newParentId);
+  if (removeParents) url.searchParams.set("removeParents", removeParents);
+  url.searchParams.set("supportsAllDrives", "true");
+
+  const res = await fetch(url.toString(), {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
 
   const data = await res.json();
   if (!res.ok) throw new Error(data.error?.message || "Failed to move item");
@@ -394,14 +408,19 @@ export async function moveDriveItem(
 }
 
 /**
- * Sets trashed status on a file inside the vault.
+ * Moves an item to Drive Trash (soft-delete).
  */
-export async function setDriveTrashed(fileId: string, trashed: boolean): Promise<DriveItem> {
-  await assertInsideVault(fileId);
+export async function setDriveTrashed(itemId: string, trashed: boolean): Promise<DriveItem> {
+  if (!trashed) {
+    // Restoring: verify it belongs to vault before restoring
+    await assertInsideVault(itemId);
+  } else {
+    await assertInsideVault(itemId);
+  }
 
   const accessToken = await getAdminAccessToken();
   const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`,
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(itemId)}?supportsAllDrives=true`,
     {
       method: "PATCH",
       headers: {
@@ -413,44 +432,43 @@ export async function setDriveTrashed(fileId: string, trashed: boolean): Promise
   );
 
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error?.message || "Failed to update trash status");
+  if (!res.ok) throw new Error(data.error?.message || `Failed to ${trashed ? "trash" : "restore"} item`);
   return data;
 }
 
 /**
- * Permanently deletes a file inside the vault.
+ * Permanently deletes an item from Google Drive (admin-only).
  */
-export async function deleteDriveItemPermanently(fileId: string): Promise<boolean> {
-  await assertInsideVault(fileId);
-
+export async function deleteDriveItemPermanently(itemId: string): Promise<void> {
   const accessToken = await getAdminAccessToken();
   const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`,
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(itemId)}?supportsAllDrives=true`,
     {
       method: "DELETE",
       headers: { Authorization: `Bearer ${accessToken}` },
     }
   );
 
-  if (!res.ok && res.status !== 204) {
-    const data = await res.json();
-    throw new Error(data.error?.message || "Failed to delete file permanently");
+  if (!res.ok && res.status !== 204 && res.status !== 404) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error?.message || "Failed to permanently delete item");
   }
-  return true;
+
+  verifiedFolderIds.delete(itemId);
 }
 
 /**
- * Updates appProperties (tags, notes) on an item inside the vault.
+ * Updates appProperties (e.g. tags, notes) for a file in the vault.
  */
 export async function updateDriveAppProperties(
-  fileId: string,
+  itemId: string,
   appProperties: Record<string, string>
 ): Promise<DriveItem> {
-  await assertInsideVault(fileId);
-
+  await assertInsideVault(itemId);
   const accessToken = await getAdminAccessToken();
+
   const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`,
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(itemId)}?supportsAllDrives=true`,
     {
       method: "PATCH",
       headers: {
@@ -462,29 +480,31 @@ export async function updateDriveAppProperties(
   );
 
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error?.message || "Failed to update appProperties");
+  if (!res.ok) throw new Error(data.error?.message || "Failed to update item metadata");
   return data;
 }
 
 /**
- * Initiates resumable upload session in parentId (defaults to vault root).
+ * Initiates a Google Drive resumable upload session for direct client uploads.
+ * Bypasses Vercel 4.5MB serverless payload limit.
  */
 export async function createResumableUploadSession(
   name: string,
   mimeType: string,
-  size: number,
   parentId?: string,
   appProperties?: Record<string, string>
 ): Promise<{ uploadUrl: string }> {
-  const parent = parentId || getVaultRootId();
-  await assertInsideVault(parent);
+  const rootId = getVaultRootId();
+  const targetParent = parentId || rootId;
+
+  // Boundary check
+  await assertInsideVault(targetParent);
 
   const accessToken = await getAdminAccessToken();
-
   const metadata: Record<string, unknown> = {
     name,
-    parents: [parent],
     mimeType,
+    parents: [targetParent],
   };
 
   if (appProperties) {
@@ -497,16 +517,15 @@ export async function createResumableUploadSession(
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json; charset=UTF-8",
-        "X-Upload-Content-Type": mimeType,
-        "X-Upload-Content-Length": size.toString(),
+        "Content-Type": "application/json",
+        "X-Upload-Content-Type": mimeType || "application/octet-stream",
       },
       body: JSON.stringify(metadata),
     }
   );
 
-  if (res.status !== 200) {
-    const errorData = await res.json();
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
     throw new Error(errorData.error?.message || "Failed to initiate resumable upload session");
   }
 

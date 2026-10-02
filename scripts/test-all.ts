@@ -1,8 +1,8 @@
 import "dotenv/config";
-import { validateEnv, getEnv } from "../api/_utils/env";
-import { createSessionToken, verifySessionToken } from "../api/_utils/auth";
-import { db } from "../src/db";
-import { users, activity, stars, settings } from "../src/db/schema";
+import { validateEnv, getEnv } from "../server/env";
+import { createSessionToken, verifySessionToken } from "../server/auth";
+import { db } from "../server/db";
+import { users, activity, stars, settings } from "../server/db/schema";
 import { eq, sql } from "drizzle-orm";
 
 async function runTests() {

@@ -39,6 +39,34 @@
   ],
   "rewrites": [
     {
+      "source": "/api/callback",
+      "destination": "/api/auth/callback"
+    },
+    {
+      "source": "/api/logout",
+      "destination": "/api/auth/logout"
+    },
+    {
+      "source": "/api/me",
+      "destination": "/api/auth/me"
+    },
+    {
+      "source": "/api/admin/drive/:action",
+      "destination": "/api/admin/drive-:action"
+    },
+    {
+      "source": "/api/upload/:action",
+      "destination": "/api/drive/upload-:action"
+    },
+    {
+      "source": "/api/activity",
+      "destination": "/api/activity/index"
+    },
+    {
+      "source": "/api/stars",
+      "destination": "/api/stars/index"
+    },
+    {
       "source": "/((?!api/|src/|@vite/|@react-refresh|node_modules/|@id/|@fs/|sw.js|workbox-|manifest.webmanifest|assets/|favicon|.*\\.[a-zA-Z0-9]+$).*)",
       "destination": "/index.html"
     }

@@ -1,4 +1,4 @@
-import { getEnv } from "../api/_utils/env";
+import { getEnv } from "../server/env.js";
 
 async function verifyLiveDevServer() {
   console.log("=================================================");
@@ -39,24 +39,20 @@ async function verifyLiveDevServer() {
   const clientIdParam = redirectUrl.searchParams.get("client_id");
   const redirectUriParam = redirectUrl.searchParams.get("redirect_uri");
   const scopeParam = redirectUrl.searchParams.get("scope");
-  const accessTypeParam = redirectUrl.searchParams.get("access_type");
   const promptParam = redirectUrl.searchParams.get("prompt");
 
   console.log(`  -> Redirect Host: ${redirectUrl.hostname}`);
   console.log(`  -> client_id matches: ${clientIdParam === env.GOOGLE_CLIENT_ID}`);
   console.log(`  -> redirect_uri matches: ${redirectUriParam === env.GOOGLE_REDIRECT_URI}`);
-  console.log(`  -> access_type: ${accessTypeParam}`);
   console.log(`  -> prompt: ${promptParam}`);
-  console.log(`  -> scope contains drive: ${scopeParam?.includes("drive")}`);
+  console.log(`  -> scope contains openid/email/profile: ${scopeParam?.includes("email")}`);
 
   if (
     clientIdParam === env.GOOGLE_CLIENT_ID &&
     redirectUriParam === env.GOOGLE_REDIRECT_URI &&
-    accessTypeParam === "offline" &&
-    promptParam === "consent" &&
-    scopeParam?.includes("drive")
+    scopeParam?.includes("email")
   ) {
-    console.log("  [PASS] OAuth login redirect URL contains exact client_id, redirect_uri, and offline prompt.\n");
+    console.log("  [PASS] OAuth login redirect URL contains exact client_id, redirect_uri, and user scopes.\n");
   } else {
     console.error("  [FAIL] Redirect URL parameters mismatch!");
     process.exit(1);

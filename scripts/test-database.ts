@@ -1,7 +1,7 @@
 import "dotenv/config";
-import { getEnv } from "../api/_utils/env";
-import { db } from "../src/db";
-import { users, activity, stars } from "../src/db/schema";
+import { getEnv } from "../server/env";
+import { db } from "../server/db";
+import { users, activity, stars } from "../server/db/schema";
 import { eq, sql } from "drizzle-orm";
 import vercelConfig from "../vercel.json" with { type: "json" };
 
