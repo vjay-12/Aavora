@@ -6,7 +6,7 @@ interface UploadModalProps {
   isOpen: boolean;
   parentId?: string;
   onClose: () => void;
-  onUploadSuccess: () => void;
+  onUploadSuccess: (fileName?: string) => void;
 }
 
 export const UploadModal: React.FC<UploadModalProps> = ({
@@ -74,52 +74,95 @@ export const UploadModal: React.FC<UploadModalProps> = ({
       const { uploadUrl } = await sessionRes.json();
 
       // 2. Direct browser upload to Google Drive resumable session URL (Bypasses Vercel 4.5MB limit!)
-      const xhr = new XMLHttpRequest();
-      xhr.open("PUT", uploadUrl, true);
-      xhr.setRequestHeader("Content-Type", selectedFile.type || "application/octet-stream");
+      let driveId: string | undefined = undefined;
+      let directUploadError: any = null;
 
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable) {
-          const pct = Math.round((event.loaded / event.total) * 100);
-          setProgress(pct);
-        }
-      };
+      try {
+        const uploaded = await new Promise<{ id?: string }>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("PUT", uploadUrl, true);
+          xhr.setRequestHeader("Content-Type", selectedFile.type || "application/octet-stream");
 
-      const uploadPromise = new Promise<{ id: string; name: string }>((resolve, reject) => {
-        xhr.onload = () => {
-          if (xhr.status === 200 || xhr.status === 201) {
-            try {
-              const resData = JSON.parse(xhr.responseText);
-              resolve(resData);
-            } catch {
-              resolve({ id: "unknown", name: selectedFile.name });
+          xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable) {
+              const pct = Math.round((event.loaded / event.total) * 100);
+              setProgress(pct);
             }
-          } else {
-            reject(new Error(`Direct upload failed with status ${xhr.status}`));
+          };
+
+          xhr.onload = () => {
+            if (xhr.status === 200 || xhr.status === 201) {
+              try {
+                const resData = JSON.parse(xhr.responseText);
+                resolve(resData);
+              } catch {
+                resolve({});
+              }
+            } else {
+              reject(new Error(`Direct upload returned status ${xhr.status}`));
+            }
+          };
+
+          xhr.onerror = () => {
+            reject(new Error("Network error during direct upload"));
+          };
+
+          xhr.send(selectedFile);
+        });
+
+        driveId = uploaded?.id;
+      } catch (uploadErr: any) {
+        directUploadError = uploadErr;
+        console.warn("[Direct Upload] PUT caught error, checking session status before failing:", uploadErr);
+      }
+
+      // If direct PUT failed or was blocked by CORS, try querying session status from client
+      if (!driveId) {
+        try {
+          const statusRes = await fetch(uploadUrl, {
+            method: "PUT",
+            headers: {
+              "Content-Range": `bytes */${selectedFile.size}`,
+            },
+          });
+          if (statusRes.status === 200 || statusRes.status === 201) {
+            const data = await statusRes.json().catch(() => null);
+            if (data?.id) {
+              driveId = data.id;
+            }
           }
-        };
-        xhr.onerror = () => reject(new Error("Network error during direct upload"));
-      });
+        } catch {
+          // Ignore client-side query error; server verification will check directly
+        }
+      }
 
-      xhr.send(selectedFile);
-      const uploadedDriveItem = await uploadPromise;
-
-      // 3. Notify server of completion to log in Neon activity table
-      await fetch("/api/upload/complete", {
+      // 3. Notify server of completion and let server verify before deciding
+      const completeRes = await fetch("/api/upload/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          driveId: uploadedDriveItem.id,
+          driveId,
+          uploadUrl,
           name: selectedFile.name,
+          parentId,
           path: parentId,
           size: selectedFile.size,
-          mimeType: selectedFile.type,
+          mimeType: selectedFile.type || "application/octet-stream",
           tags,
           notes,
         }),
       });
 
-      onUploadSuccess();
+      const completeData = await completeRes.json().catch(() => ({}));
+      if (!completeRes.ok || !completeData.success) {
+        throw new Error(
+          completeData.error ||
+          directUploadError?.message ||
+          "Upload verification failed: file is missing from Google Drive"
+        );
+      }
+
+      onUploadSuccess(selectedFile.name);
       onClose();
     } catch (err: any) {
       console.error("Upload error:", err);

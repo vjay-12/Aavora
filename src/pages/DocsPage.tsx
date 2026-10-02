@@ -21,6 +21,7 @@ import {
   FolderPlus,
   Plus,
   Upload,
+  CheckCircle2,
 } from "lucide-react";
 
 interface DriveItem {
@@ -43,6 +44,20 @@ export const DocsPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const folderId = searchParams.get("folderId") || undefined;
   const folderName = searchParams.get("folderName") || "Vault Root";
+
+  const [uploadToast, setUploadToast] = useState<{ show: boolean; fileName: string }>({
+    show: false,
+    fileName: "",
+  });
+
+  useEffect(() => {
+    if (uploadToast.show) {
+      const timer = setTimeout(() => {
+        setUploadToast({ show: false, fileName: "" });
+      }, 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [uploadToast.show]);
   const [isSeeding, setIsSeeding] = useState(false);
   const [seedMessage, setSeedMessage] = useState<string | null>(null);
 
@@ -166,6 +181,30 @@ export const DocsPage: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {/* Upload Success Toast */}
+      {uploadToast.show && (
+        <div className="p-4 rounded-2xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs flex items-center justify-between gap-3 animate-slideDown shadow-lg shadow-emerald-500/10">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center flex-shrink-0">
+              <CheckCircle2 className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="font-bold text-sm text-white">Upload Successful</p>
+              <p className="text-[11px] text-emerald-200/90">
+                <strong>{uploadToast.fileName}</strong> has been saved directly to Google Drive.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setUploadToast({ show: false, fileName: "" })}
+            className="text-emerald-400 hover:text-white p-1 text-sm font-semibold"
+            aria-label="Dismiss toast"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Admin Drive Disconnected Banner */}
       {isDriveDisconnected && (
         <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-slideDown">
@@ -439,9 +478,13 @@ export const DocsPage: React.FC = () => {
         isOpen={showUploadModal}
         parentId={folderId || data?.rootFolderId}
         onClose={() => setShowUploadModal(false)}
-        onUploadSuccess={() => {
+        onUploadSuccess={(uploadedName) => {
           refetch();
           setShowUploadModal(false);
+          setUploadToast({
+            show: true,
+            fileName: uploadedName || "Document",
+          });
         }}
       />
 

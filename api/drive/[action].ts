@@ -11,6 +11,7 @@ import {
   deleteDriveItemPermanently,
   getDriveStorageQuota,
   createResumableUploadSession,
+  verifyOrFindUploadedFile,
   getAdminAccessToken,
   assertInsideVault,
   AdminDriveError,
@@ -18,6 +19,7 @@ import {
 import { json, error, parseJsonBody } from "../../server/response.js";
 import { db } from "../../server/db/index.js";
 import { activity } from "../../server/db/schema.js";
+import { eq, and } from "drizzle-orm";
 
 function getDriveAction(req: IncomingMessage): string {
   const url = new URL(req.url || "", `http://${req.headers.host || "localhost:5173"}`);
@@ -384,11 +386,22 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       if (body.tags && body.tags.length > 0) appProperties.tags = JSON.stringify(body.tags);
       if (body.notes) appProperties.notes = body.notes;
 
+      // Forward client Origin header (or referer origin) to Google Drive
+      let originHeader = (req.headers.origin || "").trim();
+      if (!originHeader && req.headers.referer) {
+        try {
+          originHeader = new URL(req.headers.referer).origin;
+        } catch {
+          // ignore
+        }
+      }
+
       const { uploadUrl } = await createResumableUploadSession(
         body.name,
         body.mimeType || "application/octet-stream",
         targetParent,
-        appProperties
+        appProperties,
+        originHeader
       );
 
       return json(res, { uploadUrl });
@@ -397,40 +410,80 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     // 15. POST /api/drive/upload-complete or complete
     if (action === "upload-complete" || action === "complete") {
       const body = await parseJsonBody<{
-        driveId: string;
+        driveId?: string;
+        uploadUrl?: string;
         name: string;
         path?: string;
+        parentId?: string;
         size?: number;
         mimeType?: string;
         tags?: string[];
         notes?: string;
       }>(req);
 
-      if (!body.driveId || !body.name) {
-        return error(res, "Missing driveId or name", 400);
+      if (!body.name) {
+        return error(res, "Missing file name", 400);
       }
 
-      await assertInsideVault(body.driveId);
+      const targetParent = body.parentId || body.path || getVaultRootId();
+      await assertInsideVault(targetParent);
 
+      // Verify file existence in Google Drive via ID, upload session, or files.list
+      const verifiedFile = await verifyOrFindUploadedFile({
+        driveId: body.driveId,
+        uploadUrl: body.uploadUrl,
+        name: body.name,
+        parentId: targetParent,
+        size: body.size,
+        mimeType: body.mimeType,
+      });
+
+      if (!verifiedFile) {
+        return error(res, "Upload verification failed: file could not be verified in Google Drive", 404);
+      }
+
+      // Check idempotency: file already recorded in activity?
+      const existingActivity = await db
+        .select()
+        .from(activity)
+        .where(
+          and(
+            eq(activity.action, "upload"),
+            eq(activity.driveId, verifiedFile.id)
+          )
+        )
+        .limit(1);
+
+      if (existingActivity.length > 0) {
+        return json(res, {
+          success: true,
+          item: verifiedFile,
+          file: verifiedFile,
+          activity: existingActivity[0],
+          alreadyLogged: true,
+        });
+      }
+
+      // Log activity once
       const [act] = await db
         .insert(activity)
         .values({
           userId: session.email,
           userName: session.name,
           action: "upload",
-          driveId: body.driveId,
-          name: body.name,
-          path: body.path || getVaultRootId(),
+          driveId: verifiedFile.id,
+          name: verifiedFile.name,
+          path: targetParent,
           meta: {
-            size: body.size,
-            mimeType: body.mimeType,
+            size: verifiedFile.size || body.size,
+            mimeType: verifiedFile.mimeType || body.mimeType,
             tags: body.tags || [],
             notes: body.notes || "",
           },
         })
         .returning();
 
-      return json(res, { success: true, activity: act });
+      return json(res, { success: true, item: verifiedFile, file: verifiedFile, activity: act });
     }
 
     return error(res, `Unknown drive action: ${action}`, 404);

@@ -487,15 +487,26 @@ export async function updateDriveAppProperties(
   return data;
 }
 
+export interface VerifiedUploadedFile {
+  id: string;
+  name: string;
+  size?: number | string;
+  mimeType?: string;
+  parents?: string[];
+  createdTime?: string;
+}
+
 /**
  * Initiates a Google Drive resumable upload session for direct client uploads.
+ * Forwards browser's Origin header (or APP_URL) so Google returns CORS headers for client PUTs.
  * Bypasses Vercel 4.5MB serverless payload limit.
  */
 export async function createResumableUploadSession(
   name: string,
   mimeType: string,
   parentId?: string,
-  appProperties?: Record<string, string>
+  appProperties?: Record<string, string>,
+  origin?: string
 ): Promise<{ uploadUrl: string }> {
   const rootId = getVaultRootId();
   const targetParent = parentId || rootId;
@@ -514,15 +525,24 @@ export async function createResumableUploadSession(
     metadata.appProperties = appProperties;
   }
 
+  const env = getEnv();
+  const effectiveOrigin = (origin || env.APP_URL || "").trim();
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+    "X-Upload-Content-Type": mimeType || "application/octet-stream",
+  };
+
+  if (effectiveOrigin) {
+    headers["Origin"] = effectiveOrigin;
+  }
+
   const res = await fetch(
     "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true",
     {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-        "X-Upload-Content-Type": mimeType || "application/octet-stream",
-      },
+      headers,
       body: JSON.stringify(metadata),
     }
   );
@@ -538,6 +558,115 @@ export async function createResumableUploadSession(
   }
 
   return { uploadUrl };
+}
+
+/**
+ * Robustly verifies whether an uploaded file exists in Google Drive:
+ * 1. By direct driveId if provided and inside vault.
+ * 2. By querying the resumable upload session URL (PUT Content-Range: bytes * / <size>).
+ * 3. By querying Google Drive files.list (matching name, parent, and optionally size, created in last 10 mins).
+ * Returns the verified file metadata, or null if verification confirms it is missing.
+ */
+export async function verifyOrFindUploadedFile(params: {
+  driveId?: string;
+  uploadUrl?: string;
+  name: string;
+  parentId?: string;
+  size?: number;
+  mimeType?: string;
+}): Promise<VerifiedUploadedFile | null> {
+  const rootId = getVaultRootId();
+  const targetParent = params.parentId || rootId;
+
+  // 1. Direct driveId verification
+  if (params.driveId && params.driveId !== "unknown") {
+    try {
+      await assertInsideVault(params.driveId);
+      const file = await getDriveFile(params.driveId);
+      if (file && !file.trashed) {
+        return {
+          id: file.id,
+          name: file.name,
+          size: file.size,
+          mimeType: file.mimeType,
+          parents: file.parents,
+          createdTime: file.createdTime,
+        };
+      }
+    } catch {
+      // Continue to next verification strategies
+    }
+  }
+
+  // 2. Query resumable upload session status from Google Drive
+  if (params.uploadUrl) {
+    try {
+      const sessionCheckRes = await fetch(params.uploadUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Range": `bytes */${typeof params.size === "number" && params.size > 0 ? params.size : "*"}`,
+        },
+      });
+
+      if (sessionCheckRes.status === 200 || sessionCheckRes.status === 201) {
+        const sessionData = await sessionCheckRes.json().catch(() => null);
+        if (sessionData && sessionData.id) {
+          return {
+            id: sessionData.id,
+            name: sessionData.name || params.name,
+            size: sessionData.size,
+            mimeType: sessionData.mimeType,
+            parents: sessionData.parents,
+            createdTime: sessionData.createdTime,
+          };
+        }
+      }
+    } catch (sessionErr) {
+      console.warn("[Upload Verify] Querying upload session failed:", sessionErr);
+    }
+  }
+
+  // 3. Query files.list in parent folder matching name and recent creation time
+  try {
+    const accessToken = await getAdminAccessToken();
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const safeName = params.name.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const q = `name = '${safeName}' and '${targetParent}' in parents and trashed = false and createdTime >= '${tenMinutesAgo}'`;
+
+    const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+      q
+    )}&fields=${encodeURIComponent(
+      "files(id, name, mimeType, size, createdTime, parents, trashed)"
+    )}&orderBy=${encodeURIComponent("createdTime desc")}&pageSize=10&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+
+    const listRes = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    if (listRes.ok) {
+      const listData = await listRes.json().catch(() => ({}));
+      const candidateFiles: any[] = listData.files || [];
+      if (candidateFiles.length > 0) {
+        let matched = candidateFiles[0];
+        if (typeof params.size === "number" && params.size > 0) {
+          const sizeMatch = candidateFiles.find((f: any) => String(f.size) === String(params.size));
+          if (sizeMatch) matched = sizeMatch;
+        }
+        return {
+          id: matched.id,
+          name: matched.name,
+          size: matched.size,
+          mimeType: matched.mimeType,
+          parents: matched.parents,
+          createdTime: matched.createdTime,
+        };
+      }
+    }
+  } catch (listErr) {
+    console.warn("[Upload Verify] files.list check failed:", listErr);
+  }
+
+  return null;
 }
 
 /**
