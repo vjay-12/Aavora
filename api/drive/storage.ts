@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { authenticateRequest } from "../_utils/auth";
-import { getDriveStorageQuota } from "../_utils/drive";
-import { json, error } from "../_utils/response";
+import { authenticateRequest } from "../_utils/auth.js";
+import { getDriveStorageQuota } from "../_utils/drive.js";
+import { json, error } from "../_utils/response.js";
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   try {

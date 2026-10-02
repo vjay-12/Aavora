@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { authenticateRequest } from "../_utils/auth";
-import { checkRateLimit } from "../_utils/rate-limit";
-import { json, error } from "../_utils/response";
+import { authenticateRequest } from "../_utils/auth.js";
+import { checkRateLimit } from "../_utils/rate-limit.js";
+import { json, error } from "../_utils/response.js";
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   if (!checkRateLimit(req, res, 60, 60000)) return;

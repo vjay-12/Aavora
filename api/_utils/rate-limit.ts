@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { error } from "./response";
+import { error } from "./response.js";
 import fs from "fs";
 import path from "path";
 import os from "os";

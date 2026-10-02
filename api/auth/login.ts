@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { getEnv } from "../_utils/env";
-import { checkRateLimit } from "../_utils/rate-limit";
-import { error } from "../_utils/response";
+import { getEnv } from "../_utils/env.js";
+import { checkRateLimit } from "../_utils/rate-limit.js";
+import { error } from "../_utils/response.js";
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   // 1. Rate limiting

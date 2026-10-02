@@ -1,8 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { authenticateRequest } from "../_utils/auth";
-import { json, error, parseJsonBody } from "../_utils/response";
-import { db } from "../../src/db";
-import { users } from "../../src/db/schema";
+import { authenticateRequest } from "../_utils/auth.js";
+import { json, error, parseJsonBody } from "../_utils/response.js";
+import { db } from "../../src/db/index.js";
+import { users } from "../../src/db/schema.js";
 import { eq, desc } from "drizzle-orm";
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {

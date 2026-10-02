@@ -1,10 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { db } from "../../src/db";
-import { users } from "../../src/db/schema";
+import { db } from "../../src/db/index.js";
+import { users } from "../../src/db/schema.js";
 import { eq } from "drizzle-orm";
-import { getEnv } from "../_utils/env";
-import { createSessionToken, setSessionCookie, parseCookies } from "../_utils/auth";
-import { checkRateLimit } from "../_utils/rate-limit";
+import { getEnv } from "../_utils/env.js";
+import { createSessionToken, setSessionCookie, parseCookies } from "../_utils/auth.js";
+import { checkRateLimit } from "../_utils/rate-limit.js";
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   // 1. Rate limiting

@@ -1,10 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { authenticateRequest } from "./_utils/auth";
-import { json, error, parseJsonBody } from "./_utils/response";
-import { db } from "../src/db";
-import { stars } from "../src/db/schema";
+import { authenticateRequest } from "./_utils/auth.js";
+import { json, error, parseJsonBody } from "./_utils/response.js";
+import { db } from "../src/db/index.js";
+import { stars } from "../src/db/schema.js";
 import { and, eq } from "drizzle-orm";
-import { getDriveFile } from "./_utils/drive";
+import { getDriveFile } from "./_utils/drive.js";
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   try {
@@ -25,7 +25,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       }
 
       // Concurrently fetch metadata for starred files from Drive
-      const filePromises = userStars.map(async (s) => {
+      const filePromises = userStars.map(async (s: any) => {
         try {
           const file = await getDriveFile(s.driveId);
           return {

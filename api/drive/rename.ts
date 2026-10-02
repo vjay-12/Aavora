@@ -1,9 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { authenticateRequest } from "../_utils/auth";
-import { renameDriveItem } from "../_utils/drive";
-import { json, error, parseJsonBody } from "../_utils/response";
-import { db } from "../../src/db";
-import { activity } from "../../src/db/schema";
+import { authenticateRequest } from "../_utils/auth.js";
+import { renameDriveItem } from "../_utils/drive.js";
+import { json, error, parseJsonBody } from "../_utils/response.js";
+import { db } from "../../src/db/index.js";
+import { activity } from "../../src/db/schema.js";
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   if (req.method !== "POST" && req.method !== "PATCH") {

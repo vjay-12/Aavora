@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { authenticateRequest, clearSessionCookie } from "../_utils/auth";
-import { getEnv } from "../_utils/env";
-import { json, error } from "../_utils/response";
+import { authenticateRequest, clearSessionCookie } from "../_utils/auth.js";
+import { getEnv } from "../_utils/env.js";
+import { json, error } from "../_utils/response.js";
 
 export interface DriveListItem {
   id: string;

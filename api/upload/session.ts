@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { authenticateRequest } from "../_utils/auth";
-import { createResumableUploadSession } from "../_utils/drive";
-import { json, error, parseJsonBody } from "../_utils/response";
+import { authenticateRequest } from "../_utils/auth.js";
+import { createResumableUploadSession } from "../_utils/drive.js";
+import { json, error, parseJsonBody } from "../_utils/response.js";
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   if (req.method !== "POST") return error(res, "Method not allowed", 405);

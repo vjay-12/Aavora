@@ -1,13 +1,13 @@
 import "dotenv/config";
-import { getEnv } from "../../api/_utils/env";
-import { db } from "./index";
-import { users } from "./schema";
+import { getEnv } from "../../api/_utils/env.js";
+import { db } from "./index.js";
+import { users } from "./schema.js";
 import { eq } from "drizzle-orm";
 
 export async function seedUsers() {
   const env = getEnv();
   const adminEmail = env.ADMIN_EMAIL.toLowerCase().trim();
-  const allowedEmails = env.ALLOWED_EMAILS.map((e) => e.toLowerCase().trim());
+  const allowedEmails = env.ALLOWED_EMAILS.map((e: string) => e.toLowerCase().trim());
 
   console.log("[Seed]: Seeding users into Neon database...");
 
@@ -67,7 +67,7 @@ export async function seedUsers() {
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith("seed.ts")) {
   seedUsers()
     .then(() => process.exit(0))
-    .catch((err) => {
+    .catch((err: any) => {
       console.error("[Seed Error]:", err.message);
       process.exit(1);
     });

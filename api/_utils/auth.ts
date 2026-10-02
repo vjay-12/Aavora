@@ -1,8 +1,8 @@
 import { EncryptJWT, jwtDecrypt } from "jose";
-import { db } from "../../src/db";
-import { users } from "../../src/db/schema";
+import { db } from "../../src/db/index.js";
+import { users } from "../../src/db/schema.js";
 import { eq } from "drizzle-orm";
-import { getEnv } from "./env";
+import { getEnv } from "./env.js";
 import type { IncomingMessage, ServerResponse } from "http";
 
 export const COOKIE_NAME = "aavora_session";

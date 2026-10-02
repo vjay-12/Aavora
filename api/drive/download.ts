@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { authenticateRequest } from "../_utils/auth";
-import { getAdminAccessToken, getDriveFile } from "../_utils/drive";
-import { error } from "../_utils/response";
+import { authenticateRequest } from "../_utils/auth.js";
+import { getAdminAccessToken, getDriveFile } from "../_utils/drive.js";
+import { error } from "../_utils/response.js";
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   try {
