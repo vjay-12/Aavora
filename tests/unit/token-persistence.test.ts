@@ -21,6 +21,8 @@ import { settings } from "../../server/db/schema.js";
 import { eq } from "drizzle-orm";
 import { getEnv } from "../../server/env.js";
 import driveHandler from "../../api/drive/[action].js";
+import adminHandler from "../../api/admin/[action].js";
+import { createSessionToken } from "../../server/auth.js";
 
 function createFakeReq(opts: {
   method?: string;
@@ -383,5 +385,236 @@ describe("Admin Google Drive Token Persistence & Resilience", () => {
     const body = getBody();
     expect(body.success).toBe(true);
     expect(body.status).toBe("connected");
+  });
+
+  it("10. Admin-only GET /api/admin/drive/status returns connected: true, reason: null after connect", async () => {
+    const env = getEnv();
+    const adminToken = await createSessionToken({
+      id: 1,
+      email: env.ADMIN_EMAIL,
+      name: "Admin User",
+      role: "admin",
+      isAdmin: true,
+    });
+
+    await saveAdminRefreshToken("valid_admin_refresh_token_xyz");
+    invalidateAdminTokenCache();
+
+    global.fetch = async (input: any, init?: any) => {
+      const urlStr = typeof input === "string" ? input : input.url;
+      if (urlStr.includes("oauth2.googleapis.com/token")) {
+        return new Response(
+          JSON.stringify({
+            access_token: "mock_status_access_token",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    const req = createFakeReq({
+      method: "GET",
+      url: "/api/admin/drive/status",
+      token: adminToken,
+    });
+    const { res, getCode, getBody } = createFakeRes();
+
+    await adminHandler(req, res);
+    expect(getCode()).toBe(200);
+    const body = getBody();
+    expect(body.connected).toBe(true);
+    expect(body.reason).toBeNull();
+  });
+
+  it("11. Admin-only GET /api/admin/drive/status survives simulated redeploy (reads from DB)", async () => {
+    const env = getEnv();
+    const adminToken = await createSessionToken({
+      id: 1,
+      email: env.ADMIN_EMAIL,
+      name: "Admin User",
+      role: "admin",
+      isAdmin: true,
+    });
+
+    await saveAdminRefreshToken("redeploy_test_refresh_token_persistent");
+
+    // Simulate redeploy: wipe in-memory token cache completely
+    invalidateAdminTokenCache();
+    invalidateVaultCache();
+
+    global.fetch = async (input: any, init?: any) => {
+      const urlStr = typeof input === "string" ? input : input.url;
+      if (urlStr.includes("oauth2.googleapis.com/token")) {
+        return new Response(
+          JSON.stringify({
+            access_token: "mock_redeploy_access_token",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    const req = createFakeReq({
+      method: "GET",
+      url: "/api/admin/drive/status",
+      token: adminToken,
+    });
+    const { res, getCode, getBody } = createFakeRes();
+
+    await adminHandler(req, res);
+    expect(getCode()).toBe(200);
+    const body = getBody();
+    expect(body.connected).toBe(true);
+    expect(body.reason).toBeNull();
+  });
+
+  it("12. Admin-only GET /api/admin/drive/status returns GOOGLE_TRANSIENT_ERROR on network failure", async () => {
+    const env = getEnv();
+    const adminToken = await createSessionToken({
+      id: 1,
+      email: env.ADMIN_EMAIL,
+      name: "Admin User",
+      role: "admin",
+      isAdmin: true,
+    });
+
+    await saveAdminRefreshToken("transient_token_xyz");
+    invalidateAdminTokenCache();
+
+    global.fetch = async (input: any, init?: any) => {
+      const urlStr = typeof input === "string" ? input : input.url;
+      if (urlStr.includes("oauth2.googleapis.com/token")) {
+        throw new TypeError("fetch failed: network socket disconnected");
+      }
+      return originalFetch(input, init);
+    };
+
+    const req = createFakeReq({
+      method: "GET",
+      url: "/api/admin/drive/status",
+      token: adminToken,
+    });
+    const { res, getCode, getBody } = createFakeRes();
+
+    await adminHandler(req, res);
+    expect(getCode()).toBe(200);
+    const body = getBody();
+    expect(body.connected).toBe(false);
+    expect(body.reason).toBe("GOOGLE_TRANSIENT_ERROR");
+  });
+
+  it("13. Admin-only GET /api/admin/drive/status returns GOOGLE_INVALID_GRANT on revoked token", async () => {
+    const env = getEnv();
+    const adminToken = await createSessionToken({
+      id: 1,
+      email: env.ADMIN_EMAIL,
+      name: "Admin User",
+      role: "admin",
+      isAdmin: true,
+    });
+
+    await saveAdminRefreshToken("revoked_grant_token");
+    invalidateAdminTokenCache();
+
+    global.fetch = async (input: any, init?: any) => {
+      const urlStr = typeof input === "string" ? input : input.url;
+      if (urlStr.includes("oauth2.googleapis.com/token")) {
+        return new Response(
+          JSON.stringify({
+            error: "invalid_grant",
+            error_description: "Token has been revoked",
+          }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return originalFetch(input, init);
+    };
+
+    const req = createFakeReq({
+      method: "GET",
+      url: "/api/admin/drive/status",
+      token: adminToken,
+    });
+    const { res, getCode, getBody } = createFakeRes();
+
+    await adminHandler(req, res);
+    expect(getCode()).toBe(200);
+    const body = getBody();
+    expect(body.connected).toBe(false);
+    expect(body.reason).toBe("GOOGLE_INVALID_GRANT");
+  });
+
+  it("14. Admin-only GET /api/admin/drive/status returns DECRYPT_FAILED on decrypt error", async () => {
+    const env = getEnv();
+    const adminToken = await createSessionToken({
+      id: 1,
+      email: env.ADMIN_EMAIL,
+      name: "Admin User",
+      role: "admin",
+      isAdmin: true,
+    });
+
+    // Write corrupted ciphertext to DB
+    await db
+      .insert(settings)
+      .values({
+        key: testSettingKey,
+        valueEncrypted: "corrupted_iv:corrupted_tag:corrupted_data",
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: settings.key,
+        set: {
+          valueEncrypted: "corrupted_iv:corrupted_tag:corrupted_data",
+          updatedAt: new Date(),
+        },
+      });
+
+    invalidateAdminTokenCache();
+    delete process.env.GOOGLE_ADMIN_REFRESH_TOKEN;
+
+    const req = createFakeReq({
+      method: "GET",
+      url: "/api/admin/drive/status",
+      token: adminToken,
+    });
+    const { res, getCode, getBody } = createFakeRes();
+
+    await adminHandler(req, res);
+    expect(getCode()).toBe(200);
+    const body = getBody();
+    expect(body.connected).toBe(false);
+    expect(body.reason).toBe("DECRYPT_FAILED");
+  });
+
+  it("15. Non-admin is rejected from /api/admin/drive/status with 403 Forbidden", async () => {
+    const env = getEnv();
+    const memberEmail =
+      env.ALLOWED_EMAILS.find((e) => e.toLowerCase() !== env.ADMIN_EMAIL.toLowerCase()) ||
+      "sairamyabaskaran@gmail.com";
+
+    const memberToken = await createSessionToken({
+      id: 2,
+      email: memberEmail,
+      name: "Member User",
+      role: "member",
+      isAdmin: false,
+    });
+
+    const req = createFakeReq({
+      method: "GET",
+      url: "/api/admin/drive/status",
+      token: memberToken,
+    });
+    const { res, getCode, getBody } = createFakeRes();
+
+    await adminHandler(req, res);
+    expect(getCode()).toBe(403);
+    const body = getBody();
+    expect(body.error).toContain("Forbidden");
   });
 });

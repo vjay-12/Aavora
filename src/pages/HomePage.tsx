@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getRecentlyViewed, RecentItem } from "../lib/recently-viewed";
 import { formatBytes, formatDate } from "../lib/utils";
 import { getGreeting } from "../lib/user-format";
@@ -23,6 +23,7 @@ import {
 export const HomePage: React.FC = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const driveConnected = searchParams.get("driveConnected") === "true" || searchParams.get("admin_drive_connected") === "true";
   const [showConnectedToast, setShowConnectedToast] = useState(driveConnected);
@@ -33,6 +34,11 @@ export const HomePage: React.FC = () => {
   useEffect(() => {
     if (driveConnected) {
       setShowConnectedToast(true);
+      // Immediately invalidate drive queries so pre-connect stale error states are purged
+      queryClient.invalidateQueries({ queryKey: ["admin-drive-status"] });
+      queryClient.invalidateQueries({ queryKey: ["drive-categories"] });
+      queryClient.invalidateQueries({ queryKey: ["drive-storage"] });
+
       const timer = setTimeout(() => {
         setShowConnectedToast(false);
         searchParams.delete("driveConnected");
@@ -41,12 +47,24 @@ export const HomePage: React.FC = () => {
       }, 6000);
       return () => clearTimeout(timer);
     }
-  }, [driveConnected, searchParams, setSearchParams]);
+  }, [driveConnected, queryClient, searchParams, setSearchParams]);
 
   // Load recently viewed from IndexedDB (local to device)
   useEffect(() => {
     getRecentlyViewed(8).then(setRecentItems);
   }, []);
+
+  // Fetch Admin Drive Status (Banner control: missing row or invalid_grant ONLY)
+  const { data: driveStatus } = useQuery({
+    queryKey: ["admin-drive-status"],
+    queryFn: async () => {
+      const res = await fetch("/api/admin/drive/status");
+      if (!res.ok) return null;
+      return res.json() as Promise<{ connected: boolean; reason: string | null }>;
+    },
+    enabled: user?.role === "admin",
+    staleTime: 30000,
+  });
 
   // Fetch top-level categories (folders in vault root only)
   const {
@@ -72,9 +90,19 @@ export const HomePage: React.FC = () => {
     },
   });
 
+  // Show disconnected banner ONLY for missing row, invalid_grant, or decrypt failure.
+  // Treat network, 5xx, and rate-limit errors as transient (no banner).
+  // Never show success and disconnected banners simultaneously.
   const isDriveDisconnected =
-    driveData?.code === "ADMIN_DRIVE_NOT_CONNECTED" ||
-    storageData?.code === "ADMIN_DRIVE_NOT_CONNECTED";
+    !showConnectedToast &&
+    (user?.role === "admin"
+      ? driveStatus?.connected === false &&
+        (driveStatus.reason === "TOKEN_MISSING" ||
+          driveStatus.reason === "GOOGLE_INVALID_GRANT" ||
+          driveStatus.reason === "DECRYPT_FAILED" ||
+          driveStatus.reason === "ADMIN_DRIVE_NOT_CONNECTED")
+      : driveData?.code === "ADMIN_DRIVE_NOT_CONNECTED" ||
+        storageData?.code === "ADMIN_DRIVE_NOT_CONNECTED");
 
   const categories = (driveData?.items || driveData?.files || []).filter(
     (item: any) => item.isFolder
@@ -134,7 +162,12 @@ export const HomePage: React.FC = () => {
             </div>
           </div>
           <button
-            onClick={() => setShowConnectedToast(false)}
+            onClick={() => {
+              setShowConnectedToast(false);
+              searchParams.delete("driveConnected");
+              searchParams.delete("admin_drive_connected");
+              setSearchParams(searchParams, { replace: true });
+            }}
             className="text-emerald-400 hover:text-white p-1 text-sm font-semibold"
             aria-label="Dismiss toast"
           >

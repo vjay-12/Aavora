@@ -32,7 +32,7 @@ import {
   X,
   Download,
 } from "lucide-react";
-import { canUserDelete, DELETE_RESTRICTED_MESSAGE } from "../config/features";
+import { DELETE_RESTRICTED_MESSAGE } from "../config/features";
 
 interface DriveItem {
   id: string;

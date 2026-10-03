@@ -7,7 +7,7 @@ import {
   verifyOAuthState,
   OAUTH_STATE_COOKIE,
 } from "../../server/auth.js";
-import { handleAdminDriveConnectCallback } from "../../server/drive.js";
+import { handleAdminDriveConnectCallback, getAdminDriveStatus } from "../../server/drive.js";
 import { getEnv, getOAuthRedirectUri } from "../../server/env.js";
 import { db } from "../../server/db/index.js";
 import { users } from "../../server/db/schema.js";
@@ -23,6 +23,9 @@ function getAdminAction(req: IncomingMessage): string {
   }
   if (pathname.includes("/admin/drive/callback") || pathname.endsWith("/drive-callback") || pathname.endsWith("/callback")) {
     return "drive-callback";
+  }
+  if (pathname.includes("/admin/drive/status") || pathname.endsWith("/drive-status") || pathname.endsWith("/status")) {
+    return "drive-status";
   }
   if (pathname.includes("/admin/users") || pathname.endsWith("/users")) {
     return "users";
@@ -121,7 +124,26 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     return await handleAdminDriveConnectCallback(req, res, code);
   }
 
-  // 3. /api/admin/users
+  // 3. GET /api/admin/drive/status (admin-only, returns { connected, reason })
+  if (action === "drive-status") {
+    try {
+      const user = await authenticateRequest(req, res);
+      if (!user) {
+        return error(res, "Unauthorized", 401);
+      }
+      if (!requireAdmin(user)) {
+        return error(res, "Forbidden: Admin privileges required", 403);
+      }
+
+      const status = await getAdminDriveStatus();
+      return json(res, status);
+    } catch (err: any) {
+      console.error("[Admin Drive Status Error]:", err?.code || err?.message);
+      return json(res, { connected: false, reason: err?.code || "GOOGLE_INVALID_GRANT" });
+    }
+  }
+
+  // 4. /api/admin/users
   if (action === "users") {
     try {
       const session = await authenticateRequest(req);

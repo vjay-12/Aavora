@@ -436,7 +436,7 @@ describe("Admin Drive Flow: Crypto, Security & Vault Boundaries", () => {
       expect(code).toBe(302);
       expect(redirectLocation).toContain("/more?driveError=missing_refresh_token");
       expect(decodeURIComponent(redirectLocation)).toContain(
-        "Google did not return a refresh token. Remove Aavora at myaccount.google.com/permissions and try again."
+        "Google did not return a refresh token. Remove Aavora at myaccount.google.com/permissions and reconnect."
       );
     } finally {
       global.fetch = originalFetch;
@@ -449,6 +449,8 @@ describe("Admin Drive Flow: Crypto, Security & Vault Boundaries", () => {
 
     const { stateParam, cookieValue } = createOAuthState("admin-connect");
     const testSecretToken = "test_verified_admin_refresh_token_12345";
+    const isolatedTestKey = "test_admin_drive_refresh_token_isolated";
+    process.env.ADMIN_TOKEN_SETTING_KEY = isolatedTestKey;
 
     const originalFetch = global.fetch;
     try {
@@ -509,11 +511,11 @@ describe("Admin Drive Flow: Crypto, Security & Vault Boundaries", () => {
       expect(code).toBe(302);
       expect(redirectLocation).toBe("/home?driveConnected=true");
 
-      // Verify encrypted token in settings table
+      // Verify encrypted token in isolated test settings table key
       const [row] = await db
         .select()
         .from(settings)
-        .where(eq(settings.key, "admin_drive_refresh_token"))
+        .where(eq(settings.key, isolatedTestKey))
         .limit(1);
 
       expect(row).toBeDefined();
@@ -521,6 +523,10 @@ describe("Admin Drive Flow: Crypto, Security & Vault Boundaries", () => {
       expect(decryptSecret(row.valueEncrypted)).toBe(testSecretToken);
     } finally {
       global.fetch = originalFetch;
+      delete process.env.ADMIN_TOKEN_SETTING_KEY;
+      try {
+        await db.delete(settings).where(eq(settings.key, isolatedTestKey));
+      } catch {}
     }
   });
 });

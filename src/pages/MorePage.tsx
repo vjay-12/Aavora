@@ -18,7 +18,7 @@ import {
   Clock,
   HardDrive,
 } from "lucide-react";
-import { canUserDelete, DELETE_RESTRICTED_MESSAGE } from "../config/features";
+import { DELETE_RESTRICTED_MESSAGE } from "../config/features";
 import { UserAvatar } from "../components/common/UserAvatar";
 import { getUserFullName } from "../lib/user-format";
 

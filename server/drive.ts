@@ -9,10 +9,16 @@ import type { IncomingMessage, ServerResponse } from "http";
 
 export class AdminDriveError extends Error {
   code: string;
-  constructor(message: string, code = "ADMIN_DRIVE_NOT_CONNECTED") {
+  reason: "TOKEN_MISSING" | "DECRYPT_FAILED" | "GOOGLE_INVALID_GRANT";
+  constructor(
+    message: string,
+    code = "ADMIN_DRIVE_NOT_CONNECTED",
+    reason: "TOKEN_MISSING" | "DECRYPT_FAILED" | "GOOGLE_INVALID_GRANT" = "GOOGLE_INVALID_GRANT"
+  ) {
     super(message);
     this.name = "AdminDriveError";
     this.code = code;
+    this.reason = reason;
   }
 }
 
@@ -57,6 +63,12 @@ export function getAdminTokenSettingKey(): string {
   const vercelEnv = process.env.VERCEL_ENV;
   if (vercelEnv === "preview") {
     return "admin_drive_refresh_token_preview";
+  }
+  if (vercelEnv === "production") {
+    return "admin_drive_refresh_token";
+  }
+  if (process.env.NODE_ENV === "test") {
+    return "admin_drive_refresh_token_test";
   }
   return "admin_drive_refresh_token";
 }
@@ -126,6 +138,7 @@ export async function getAdminDriveHealth(): Promise<{
   connected: boolean;
   status: "connected" | "disconnected" | "transient_error";
   code?: string;
+  reason?: string | null;
   lastRefreshedAt: string | null;
   message?: string;
 }> {
@@ -134,6 +147,7 @@ export async function getAdminDriveHealth(): Promise<{
     return {
       connected: true,
       status: "connected",
+      reason: null,
       lastRefreshedAt: new Date().toISOString(),
     };
   } catch (err: any) {
@@ -142,6 +156,7 @@ export async function getAdminDriveHealth(): Promise<{
         connected: false,
         status: "disconnected",
         code: err.code || "ADMIN_DRIVE_NOT_CONNECTED",
+        reason: err.reason || "GOOGLE_INVALID_GRANT",
         lastRefreshedAt: null,
         message: err.message,
       };
@@ -150,8 +165,35 @@ export async function getAdminDriveHealth(): Promise<{
       connected: false,
       status: "transient_error",
       code: err.code || "GOOGLE_TRANSIENT_ERROR",
+      reason: "GOOGLE_TRANSIENT_ERROR",
       lastRefreshedAt: null,
       message: err.message,
+    };
+  }
+}
+
+/**
+ * Admin-only status check returning clean { connected, reason }.
+ * Reason is an error code string ('TOKEN_MISSING' | 'DECRYPT_FAILED' | 'GOOGLE_INVALID_GRANT' | 'GOOGLE_TRANSIENT_ERROR' | null).
+ * Never leaks tokens or credentials.
+ */
+export async function getAdminDriveStatus(): Promise<{
+  connected: boolean;
+  reason: "TOKEN_MISSING" | "DECRYPT_FAILED" | "GOOGLE_INVALID_GRANT" | "GOOGLE_TRANSIENT_ERROR" | null;
+}> {
+  try {
+    await getAdminAccessToken(false);
+    return { connected: true, reason: null };
+  } catch (err: any) {
+    if (err instanceof AdminDriveError) {
+      return {
+        connected: false,
+        reason: err.reason || "GOOGLE_INVALID_GRANT",
+      };
+    }
+    return {
+      connected: false,
+      reason: "GOOGLE_TRANSIENT_ERROR",
     };
   }
 }
@@ -174,7 +216,10 @@ export function getVaultRootId(): string {
  * falling back to legacy key decryption and re-encrypting with new ENCRYPTION_KEY if needed.
  * Logs error code only when retrieval or decryption fails.
  */
-async function getStoredAdminRefreshToken(): Promise<string | null> {
+async function getStoredAdminRefreshToken(): Promise<{
+  token: string | null;
+  reason?: "TOKEN_MISSING" | "DECRYPT_FAILED";
+}> {
   const key = getAdminTokenSettingKey();
   let row: any = null;
 
@@ -198,24 +243,28 @@ async function getStoredAdminRefreshToken(): Promise<string | null> {
           console.warn("[AdminDrive] Re-encryption save warning:", saveErr?.message);
         });
       }
-      return plainText;
+      return { token: plainText };
     } catch {
       console.error("[AdminDrive] Connection failed: DECRYPT_FAILED");
-      const envToken = process.env.GOOGLE_ADMIN_REFRESH_TOKEN?.trim();
-      if (envToken) {
-        return envToken;
+      if (process.env.VERCEL_ENV !== "preview") {
+        const envToken = process.env.GOOGLE_ADMIN_REFRESH_TOKEN?.trim();
+        if (envToken) {
+          return { token: envToken };
+        }
       }
-      return null;
+      return { token: null, reason: "DECRYPT_FAILED" };
     }
   }
 
-  const envToken = process.env.GOOGLE_ADMIN_REFRESH_TOKEN?.trim();
-  if (envToken) {
-    return envToken;
+  if (process.env.VERCEL_ENV !== "preview") {
+    const envToken = process.env.GOOGLE_ADMIN_REFRESH_TOKEN?.trim();
+    if (envToken) {
+      return { token: envToken };
+    }
   }
 
   console.error("[AdminDrive] Connection failed: TOKEN_MISSING");
-  return null;
+  return { token: null, reason: "TOKEN_MISSING" };
 }
 
 /**
@@ -231,11 +280,14 @@ export async function getAdminAccessToken(forceRefresh = false): Promise<string>
     return tokenCache.accessToken;
   }
 
-  const refreshToken = await getStoredAdminRefreshToken();
+  const { token: refreshToken, reason: tokenErrReason } = await getStoredAdminRefreshToken();
   if (!refreshToken) {
     throw new AdminDriveError(
-      "Admin Google Drive is not connected. Please connect the Drive as admin.",
-      "ADMIN_DRIVE_NOT_CONNECTED"
+      tokenErrReason === "DECRYPT_FAILED"
+        ? "Admin Google Drive token decryption failed. Reconnect to re-encrypt with current key."
+        : "Admin Google Drive is not connected. Please connect the Drive as admin.",
+      "ADMIN_DRIVE_NOT_CONNECTED",
+      tokenErrReason || "TOKEN_MISSING"
     );
   }
 
@@ -278,7 +330,8 @@ export async function getAdminAccessToken(forceRefresh = false): Promise<string>
           console.error("[AdminDrive] Connection failed: GOOGLE_INVALID_GRANT");
           throw new AdminDriveError(
             `Google Drive admin token is invalid or revoked (${errCode}): ${data.error_description || "Token refresh failed"}`,
-            "ADMIN_DRIVE_NOT_CONNECTED"
+            "ADMIN_DRIVE_NOT_CONNECTED",
+            "GOOGLE_INVALID_GRANT"
           );
         }
 
@@ -1002,7 +1055,7 @@ export async function handleAdminDriveConnectCallback(
     if (!tokenData.refresh_token) {
       console.warn("[Admin Drive OAuth] No refresh token returned by Google");
       const msg =
-        "Google did not return a refresh token. Remove Aavora at myaccount.google.com/permissions and try again.";
+        "Google did not return a refresh token. Remove Aavora at myaccount.google.com/permissions and reconnect.";
       res.statusCode = 302;
       res.setHeader(
         "Location",
@@ -1014,6 +1067,10 @@ export async function handleAdminDriveConnectCallback(
 
     // Encrypt and store in settings table via saveAdminRefreshToken
     await saveAdminRefreshToken(tokenData.refresh_token);
+
+    // Invalidate server token and vault cache
+    invalidateAdminTokenCache();
+    invalidateVaultCache();
 
     res.statusCode = 302;
     res.setHeader("Location", "/home?driveConnected=true");
