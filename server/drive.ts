@@ -1,7 +1,7 @@
 import { db } from "./db/index.js";
 import { settings } from "./db/schema.js";
 import { eq } from "drizzle-orm";
-import { decryptSecret, encryptSecret } from "./crypto.js";
+import { decryptSecret, encryptSecret, decryptSecretWithFallback } from "./crypto.js";
 import { getEnv, getOAuthRedirectUri } from "./env.js";
 import { maskEmail } from "./auth.js";
 import { decodeJwt } from "jose";
@@ -13,6 +13,19 @@ export class AdminDriveError extends Error {
     super(message);
     this.name = "AdminDriveError";
     this.code = code;
+  }
+}
+
+export class AdminDriveTransientError extends Error {
+  code: string;
+  statusCode: number;
+  retryable: boolean;
+  constructor(message: string, code = "GOOGLE_TRANSIENT_ERROR", statusCode = 503) {
+    super(message);
+    this.name = "AdminDriveTransientError";
+    this.code = code;
+    this.statusCode = statusCode;
+    this.retryable = true;
   }
 }
 
@@ -34,6 +47,116 @@ export function invalidateVaultCache() {
 }
 
 /**
+ * Returns the settings table key for storing the admin refresh token.
+ * Prevents Vercel Preview deployments from reading or overwriting the production token.
+ */
+export function getAdminTokenSettingKey(): string {
+  if (process.env.ADMIN_TOKEN_SETTING_KEY) {
+    return process.env.ADMIN_TOKEN_SETTING_KEY.trim();
+  }
+  const vercelEnv = process.env.VERCEL_ENV;
+  if (vercelEnv === "preview") {
+    return "admin_drive_refresh_token_preview";
+  }
+  return "admin_drive_refresh_token";
+}
+
+/**
+ * Persists an encrypted admin refresh token to Neon settings table.
+ * Never overwrites with an empty value.
+ */
+export async function saveAdminRefreshToken(refreshToken: string): Promise<void> {
+  const trimmed = (refreshToken || "").trim();
+  if (!trimmed) {
+    console.warn("[AdminDrive] Attempted to save empty refresh token; ignored.");
+    return;
+  }
+
+  const key = getAdminTokenSettingKey();
+  const encryptedToken = encryptSecret(trimmed);
+  await db
+    .insert(settings)
+    .values({
+      key,
+      valueEncrypted: encryptedToken,
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: settings.key,
+      set: {
+        valueEncrypted: encryptedToken,
+        updatedAt: new Date(),
+      },
+    });
+
+  invalidateAdminTokenCache();
+  invalidateVaultCache();
+}
+
+/**
+ * Records the timestamp of a successful token refresh for health monitoring.
+ */
+export async function recordAdminDriveLastRefreshed(): Promise<void> {
+  try {
+    const key = `${getAdminTokenSettingKey()}_last_refreshed`;
+    const encrypted = encryptSecret(new Date().toISOString());
+    await db
+      .insert(settings)
+      .values({
+        key,
+        valueEncrypted: encrypted,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: settings.key,
+        set: {
+          valueEncrypted: encrypted,
+          updatedAt: new Date(),
+        },
+      });
+  } catch {
+    // Non-blocking
+  }
+}
+
+/**
+ * Returns the admin drive health status.
+ */
+export async function getAdminDriveHealth(): Promise<{
+  connected: boolean;
+  status: "connected" | "disconnected" | "transient_error";
+  code?: string;
+  lastRefreshedAt: string | null;
+  message?: string;
+}> {
+  try {
+    await getAdminAccessToken(false);
+    return {
+      connected: true,
+      status: "connected",
+      lastRefreshedAt: new Date().toISOString(),
+    };
+  } catch (err: any) {
+    if (err instanceof AdminDriveError) {
+      return {
+        connected: false,
+        status: "disconnected",
+        code: err.code || "ADMIN_DRIVE_NOT_CONNECTED",
+        lastRefreshedAt: null,
+        message: err.message,
+      };
+    }
+    return {
+      connected: false,
+      status: "transient_error",
+      code: err.code || "GOOGLE_TRANSIENT_ERROR",
+      lastRefreshedAt: null,
+      message: err.message,
+    };
+  }
+}
+
+/**
  * Returns the Vault root folder ID.
  * Never falls back to 'root' or 'me'.
  */
@@ -48,21 +171,42 @@ export function getVaultRootId(): string {
 
 /**
  * Retrieves the admin refresh token from Neon settings table,
- * falling back to GOOGLE_ADMIN_REFRESH_TOKEN env only if not set in DB.
+ * falling back to legacy key decryption and re-encrypting with new ENCRYPTION_KEY if needed.
+ * Logs error code only when retrieval or decryption fails.
  */
 async function getStoredAdminRefreshToken(): Promise<string | null> {
+  const key = getAdminTokenSettingKey();
+  let row: any = null;
+
   try {
-    const [row] = await db
+    const [found] = await db
       .select()
       .from(settings)
-      .where(eq(settings.key, "admin_drive_refresh_token"))
+      .where(eq(settings.key, key))
       .limit(1);
+    row = found;
+  } catch (err: any) {
+    console.error("[AdminDrive] Failed reading settings table:", err?.message || err);
+  }
 
-    if (row?.valueEncrypted) {
-      return decryptSecret(row.valueEncrypted);
+  if (row?.valueEncrypted) {
+    try {
+      const { plainText, usedFallback, keyName } = decryptSecretWithFallback(row.valueEncrypted);
+      if (usedFallback && plainText) {
+        console.log(`[AdminDrive] Upgrading token encryption with primary key (decrypted via ${keyName})`);
+        saveAdminRefreshToken(plainText).catch((saveErr) => {
+          console.warn("[AdminDrive] Re-encryption save warning:", saveErr?.message);
+        });
+      }
+      return plainText;
+    } catch {
+      console.error("[AdminDrive] Connection failed: DECRYPT_FAILED");
+      const envToken = process.env.GOOGLE_ADMIN_REFRESH_TOKEN?.trim();
+      if (envToken) {
+        return envToken;
+      }
+      return null;
     }
-  } catch (err) {
-    console.error("[Drive]: Failed to read admin token from settings table:", err);
   }
 
   const envToken = process.env.GOOGLE_ADMIN_REFRESH_TOKEN?.trim();
@@ -70,18 +214,20 @@ async function getStoredAdminRefreshToken(): Promise<string | null> {
     return envToken;
   }
 
+  console.error("[AdminDrive] Connection failed: TOKEN_MISSING");
   return null;
 }
 
 /**
  * Exchanges admin refresh token for short-lived access token with in-memory caching.
- * Throws AdminDriveError with code ADMIN_DRIVE_NOT_CONNECTED if token is missing or revoked.
+ * Retries transient errors (network, 5xx, rate limits) with exponential backoff.
+ * Throws AdminDriveError (ADMIN_DRIVE_NOT_CONNECTED) ONLY on invalid_grant, revoked token, or missing row.
  */
-export async function getAdminAccessToken(): Promise<string> {
+export async function getAdminAccessToken(forceRefresh = false): Promise<string> {
   const env = getEnv();
 
-  // Return cached token if valid (with 60-second buffer)
-  if (tokenCache && tokenCache.expiresAt > Date.now() + 60000) {
+  // Return cached token if valid (with 60-second buffer) unless forceRefresh is true
+  if (!forceRefresh && tokenCache && tokenCache.expiresAt > Date.now() + 60000) {
     return tokenCache.accessToken;
   }
 
@@ -93,32 +239,98 @@ export async function getAdminAccessToken(): Promise<string> {
     );
   }
 
-  const res = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: env.GOOGLE_CLIENT_ID,
-      client_secret: env.GOOGLE_CLIENT_SECRET,
-      refresh_token: refreshToken,
-      grant_type: "refresh_token",
-    }),
-  });
+  const maxRetries = 3;
+  let lastTransientError: AdminDriveTransientError | null = null;
 
-  const data = await res.json();
-  if (!res.ok || !data.access_token) {
-    tokenCache = null;
-    throw new AdminDriveError(
-      `Google Drive admin token is invalid or revoked (${data.error || "invalid_grant"}): ${data.error_description || "Token refresh failed"}`,
-      "ADMIN_DRIVE_NOT_CONNECTED"
-    );
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: env.GOOGLE_CLIENT_ID,
+          client_secret: env.GOOGLE_CLIENT_SECRET,
+          refresh_token: refreshToken,
+          grant_type: "refresh_token",
+        }),
+      });
+
+      // Transient Google HTTP errors (5xx or 429 rate limit)
+      if (res.status >= 500 || res.status === 429) {
+        lastTransientError = new AdminDriveTransientError(
+          `Google OAuth returned transient HTTP ${res.status}`,
+          "GOOGLE_TRANSIENT_ERROR",
+          503
+        );
+        if (attempt < maxRetries) {
+          const delayMs = Math.min(300 * Math.pow(2, attempt - 1), 2000);
+          await new Promise((r) => setTimeout(r, delayMs));
+          continue;
+        }
+        break;
+      }
+
+      const data = await res.json();
+      if (!res.ok || !data.access_token) {
+        tokenCache = null;
+        const errCode = data.error || "";
+        if (errCode === "invalid_grant" || errCode === "unauthorized_client") {
+          console.error("[AdminDrive] Connection failed: GOOGLE_INVALID_GRANT");
+          throw new AdminDriveError(
+            `Google Drive admin token is invalid or revoked (${errCode}): ${data.error_description || "Token refresh failed"}`,
+            "ADMIN_DRIVE_NOT_CONNECTED"
+          );
+        }
+
+        // Other non-200 responses are treated as transient
+        lastTransientError = new AdminDriveTransientError(
+          `Google OAuth error (${errCode || res.status}): ${data.error_description || "Token refresh failed"}`,
+          "GOOGLE_TRANSIENT_ERROR",
+          503
+        );
+        if (attempt < maxRetries) {
+          const delayMs = Math.min(300 * Math.pow(2, attempt - 1), 2000);
+          await new Promise((r) => setTimeout(r, delayMs));
+          continue;
+        }
+        break;
+      }
+
+      // Handle Google token rotation: persist new refresh token if returned
+      if (data.refresh_token && typeof data.refresh_token === "string" && data.refresh_token.trim().length > 0) {
+        console.log("[AdminDrive] Google returned rotated refresh token; persisting to database.");
+        saveAdminRefreshToken(data.refresh_token.trim()).catch((saveErr) => {
+          console.warn("[AdminDrive] Failed to persist rotated refresh token:", saveErr?.message);
+        });
+      }
+
+      tokenCache = {
+        accessToken: data.access_token,
+        expiresAt: Date.now() + (data.expires_in || 3600) * 1000,
+      };
+
+      recordAdminDriveLastRefreshed().catch(() => {});
+
+      return data.access_token;
+    } catch (err: any) {
+      if (err instanceof AdminDriveError) {
+        throw err;
+      }
+      lastTransientError = new AdminDriveTransientError(
+        `Network error communicating with Google OAuth: ${err?.message || "fetch failed"}`,
+        "GOOGLE_TRANSIENT_ERROR",
+        503
+      );
+      if (attempt < maxRetries) {
+        const delayMs = Math.min(300 * Math.pow(2, attempt - 1), 2000);
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+    }
   }
 
-  tokenCache = {
-    accessToken: data.access_token,
-    expiresAt: Date.now() + (data.expires_in || 3600) * 1000,
-  };
-
-  return data.access_token;
+  console.error("[AdminDrive] Connection failed: GOOGLE_TRANSIENT_ERROR");
+  throw lastTransientError || new AdminDriveTransientError("Failed to refresh Google Drive token after transient error retries");
 }
 
 /**
@@ -800,25 +1012,8 @@ export async function handleAdminDriveConnectCallback(
       return;
     }
 
-    // Encrypt and store in settings table
-    const encryptedToken = encryptSecret(tokenData.refresh_token);
-    await db
-      .insert(settings)
-      .values({
-        key: "admin_drive_refresh_token",
-        valueEncrypted: encryptedToken,
-        updatedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: settings.key,
-        set: {
-          valueEncrypted: encryptedToken,
-          updatedAt: new Date(),
-        },
-      });
-
-    invalidateAdminTokenCache();
-    invalidateVaultCache();
+    // Encrypt and store in settings table via saveAdminRefreshToken
+    await saveAdminRefreshToken(tokenData.refresh_token);
 
     res.statusCode = 302;
     res.setHeader("Location", "/home?driveConnected=true");

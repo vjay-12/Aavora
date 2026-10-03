@@ -1,6 +1,12 @@
 {
   "framework": "vite",
   "regions": ["sin1"],
+  "crons": [
+    {
+      "path": "/api/drive/cron",
+      "schedule": "0 4 * * *"
+    }
+  ],
   "headers": [
     {
       "source": "/api/drive/file(.*)",

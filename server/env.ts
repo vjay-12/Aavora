@@ -11,6 +11,7 @@ export interface EnvConfig {
   SESSION_SECRET: string;
   APP_URL: string;
   GOOGLE_ADMIN_REFRESH_TOKEN?: string;
+  ENCRYPTION_KEY?: string;
 }
 
 const REQUIRED_VARS = [
@@ -146,6 +147,7 @@ export function validateEnv(customEnv: Record<string, string | undefined> = proc
     SESSION_SECRET: sessionSecret,
     APP_URL: effectiveAppUrl,
     GOOGLE_ADMIN_REFRESH_TOKEN: customEnv.GOOGLE_ADMIN_REFRESH_TOKEN?.trim(),
+    ENCRYPTION_KEY: customEnv.ENCRYPTION_KEY?.trim() || undefined,
   };
 }
 

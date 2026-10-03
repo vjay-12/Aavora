@@ -16,6 +16,8 @@ import {
   assertInsideVault,
   isInsideVault,
   AdminDriveError,
+  AdminDriveTransientError,
+  getAdminDriveHealth,
 } from "../../server/drive.js";
 import { json, error, parseJsonBody } from "../../server/response.js";
 import { db } from "../../server/db/index.js";
@@ -50,6 +52,41 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   const method = req.method?.toUpperCase();
 
   try {
+    // 1. Cron keepalive (authorized via Vercel Cron header, CRON_SECRET, or admin session)
+    if (action === "cron" || action === "keepalive") {
+      const isVercelCron = Boolean(req.headers["x-vercel-cron"]);
+      const authHeader = String(req.headers["authorization"] || "");
+      const cronSecret = process.env.CRON_SECRET?.trim();
+      const isCronSecret = Boolean(cronSecret && authHeader === `Bearer ${cronSecret}`);
+
+      const session = await authenticateRequest(req);
+      if (!isVercelCron && !isCronSecret && !requireAdmin(session)) {
+        return error(res, "Unauthorized cron invocation", 401);
+      }
+
+      try {
+        await getAdminAccessToken(true); // Force proactive refresh
+        return json(res, {
+          success: true,
+          status: "connected",
+          refreshedAt: new Date().toISOString(),
+          message: "Admin Google Drive token refreshed successfully",
+        });
+      } catch (err: any) {
+        if (err instanceof AdminDriveError) {
+          return json(res, { success: false, status: "disconnected", code: err.code, error: err.message }, 503);
+        }
+        return json(res, { success: false, status: "transient_error", code: err.code || "GOOGLE_TRANSIENT_ERROR", error: err.message }, 503);
+      }
+    }
+
+    // 2. Health status endpoint
+    if (action === "status") {
+      const health = await getAdminDriveHealth();
+      return json(res, health);
+    }
+
+    // All remaining Drive actions require an authenticated session
     const session = await authenticateRequest(req);
     if (!session) return error(res, "Unauthorized", 401);
 
@@ -769,6 +806,21 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         {
           error: "Vault Google Drive is not connected.",
           code: "ADMIN_DRIVE_NOT_CONNECTED",
+        },
+        503
+      );
+    }
+    if (
+      err instanceof AdminDriveTransientError ||
+      err.code === "GOOGLE_TRANSIENT_ERROR" ||
+      err.code === "DRIVE_TRANSIENT_ERROR"
+    ) {
+      return json(
+        res,
+        {
+          error: "Google Drive service temporarily unavailable. Please retry in a few moments.",
+          code: "DRIVE_TRANSIENT_ERROR",
+          retryable: true,
         },
         503
       );

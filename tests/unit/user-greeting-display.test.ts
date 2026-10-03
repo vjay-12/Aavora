@@ -13,6 +13,7 @@ import adminHandler from "../../api/admin/[action].js";
 import { db } from "../../server/db/index.js";
 import { users, activity } from "../../server/db/schema.js";
 import { eq } from "drizzle-orm";
+import { getEnv } from "../../server/env.js";
 import {
   createSessionToken,
   COOKIE_NAME,
@@ -366,11 +367,12 @@ describe("User Display & Greeting Rules", () => {
         })
         .returning();
 
-      // 2. Ensure an admin exists in database
+      // 2. Ensure an admin exists in database matching ADMIN_EMAIL
+      const env = getEnv();
       const [existingAdmin] = await db
         .select()
         .from(users)
-        .where(eq(users.role, "admin"))
+        .where(eq(users.email, env.ADMIN_EMAIL))
         .limit(1);
 
       let adminUser = existingAdmin;
@@ -378,7 +380,7 @@ describe("User Display & Greeting Rules", () => {
         const [createdAdmin] = await db
           .insert(users)
           .values({
-            email: testAdminEmail,
+            email: env.ADMIN_EMAIL,
             name: "Admin Tester",
             role: "admin",
             active: true,
@@ -467,10 +469,11 @@ describe("User Display & Greeting Rules", () => {
       expect(targetItemForMember.userName).toBe("Secret User");
 
       // 2. Admin session querying activity
+      const env = getEnv();
       const [existingAdmin] = await db
         .select()
         .from(users)
-        .where(eq(users.role, "admin"))
+        .where(eq(users.email, env.ADMIN_EMAIL))
         .limit(1);
 
       const adminToken = await createSessionToken({
