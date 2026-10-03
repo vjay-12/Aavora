@@ -1,5 +1,6 @@
 import React, { useState, useRef } from "react";
-import { Upload, X, File, AlertCircle, Loader2 } from "lucide-react";
+import { Upload, X, File, AlertCircle, Loader2, Folder, CheckCircle2 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { formatBytes } from "../../lib/utils";
 
 interface UploadModalProps {
@@ -16,13 +17,29 @@ export const UploadModal: React.FC<UploadModalProps> = ({
   onUploadSuccess,
 }) => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [destinationFolderId, setDestinationFolderId] = useState<string>(parentId || "");
   const [tagInput, setTagInput] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   const [notes, setNotes] = useState("");
   const [isUploading, setIsUploading] = useState(false);
+  const [isComplete, setIsComplete] = useState(false);
   const [progress, setProgress] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const { data: driveData } = useQuery({
+    queryKey: ["drive-folders-select"],
+    queryFn: async () => {
+      const res = await fetch("/api/drive/list");
+      if (!res.ok) return { items: [] };
+      return res.json();
+    },
+    enabled: isOpen,
+  });
+
+  const availableFolders = (driveData?.items || []).filter(
+    (item: any) => item.isFolder || item.mimeType === "application/vnd.google-apps.folder"
+  );
 
   if (!isOpen) return null;
 
@@ -48,11 +65,14 @@ export const UploadModal: React.FC<UploadModalProps> = ({
     if (!selectedFile) return;
 
     setIsUploading(true);
+    setIsComplete(false);
     setProgress(0);
     setErrorMsg(null);
 
+    const targetParent = destinationFolderId || parentId;
+
     try {
-      // 1. Request resumable upload session from server (owned by admin!)
+      // 1. Request upload session from server
       const sessionRes = await fetch("/api/upload/session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -60,20 +80,20 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           name: selectedFile.name,
           mimeType: selectedFile.type || "application/octet-stream",
           size: selectedFile.size,
-          parentId,
+          parentId: targetParent,
           tags,
           notes,
         }),
       });
 
       if (!sessionRes.ok) {
-        const err = await sessionRes.json();
-        throw new Error(err.error || "Failed to create upload session");
+        const err = await sessionRes.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to start upload");
       }
 
-      const { uploadUrl } = await sessionRes.json();
+      const { uploadUrl, fileName } = await sessionRes.json();
 
-      // 2. Direct browser upload to Google Drive resumable session URL (Bypasses Vercel 4.5MB limit!)
+      // 2. Direct browser upload to session URL
       let driveId: string | undefined = undefined;
       let directUploadError: any = null;
 
@@ -113,7 +133,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         driveId = uploaded?.id;
       } catch (uploadErr: any) {
         directUploadError = uploadErr;
-        console.warn("[Direct Upload] PUT caught error, checking session status before failing:", uploadErr);
+        console.warn("[Upload] PUT notice, verifying with server:", uploadErr);
       }
 
       // If direct PUT failed or was blocked by CORS, try querying session status from client
@@ -132,20 +152,20 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             }
           }
         } catch {
-          // Ignore client-side query error; server verification will check directly
+          // Ignore client query error
         }
       }
 
-      // 3. Notify server of completion and let server verify before deciding
+      // 3. Notify server of completion
       const completeRes = await fetch("/api/upload/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           driveId,
           uploadUrl,
-          name: selectedFile.name,
-          parentId,
-          path: parentId,
+          name: fileName || selectedFile.name,
+          parentId: targetParent,
+          path: targetParent,
           size: selectedFile.size,
           mimeType: selectedFile.type || "application/octet-stream",
           tags,
@@ -158,40 +178,46 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         throw new Error(
           completeData.error ||
           directUploadError?.message ||
-          "Upload verification failed: file is missing from Google Drive"
+          "Upload verification failed"
         );
       }
 
-      onUploadSuccess(selectedFile.name);
-      onClose();
+      setProgress(100);
+      setIsComplete(true);
+      setTimeout(() => {
+        onUploadSuccess(fileName || selectedFile.name);
+        onClose();
+      }, 700);
     } catch (err: any) {
-      console.error("Upload error:", err);
-      setErrorMsg(err.message || "Upload failed. Please try again.");
+      console.error("[Upload Error Details]:", err);
+      setErrorMsg("Upload didn't finish. Please check your internet and try again.");
     } finally {
       setIsUploading(false);
     }
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-      <div className="relative w-full max-w-lg bg-[#0d1322] border border-white/10 rounded-2xl p-6 shadow-2xl text-foreground">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
+      <div className="relative w-full max-w-lg bg-[#0d1322] border border-white/10 rounded-3xl p-6 shadow-2xl text-foreground animate-scaleUp">
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-sky-500/20 text-sky-400 flex items-center justify-center">
+            <div className="w-10 h-10 rounded-2xl bg-sky-500/20 text-sky-400 flex items-center justify-center">
               <Upload className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-white">Direct Resumable Upload</h2>
+              <h2 className="text-base font-bold text-white">Upload file</h2>
               <p className="text-xs text-muted-foreground">
-                High-speed upload straight to Google Drive (no size limit)
+                Save a document directly to your family vault
               </p>
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
             disabled={isUploading}
-            className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white"
+            aria-label="Close"
+            className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white min-h-[44px] min-w-[44px] flex items-center justify-center transition"
           >
             <X className="w-4 h-4" />
           </button>
@@ -203,7 +229,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           type="file"
           className="hidden"
           onChange={handleFileChange}
-          disabled={isUploading}
+          disabled={isUploading || isComplete}
         />
 
         {!selectedFile ? (
@@ -212,9 +238,9 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             className="border-2 border-dashed border-white/15 hover:border-sky-500/50 rounded-2xl p-8 text-center cursor-pointer bg-white/[0.02] hover:bg-white/5 transition-all group"
           >
             <Upload className="w-8 h-8 text-muted-foreground group-hover:text-sky-400 mx-auto mb-3 transition-colors" />
-            <p className="text-sm font-semibold text-white">Click or drop file here</p>
+            <p className="text-sm font-semibold text-white">Click or drop a file here</p>
             <p className="text-xs text-muted-foreground mt-1">
-              PDF, Images, Documents, Videos — all sizes supported
+              Photos, PDFs, and documents
             </p>
           </div>
         ) : (
@@ -241,6 +267,29 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           </div>
         )}
 
+        {/* Choose Destination Folder */}
+        <div className="mt-4 space-y-1">
+          <label className="block text-xs font-medium text-muted-foreground">
+            Folder
+          </label>
+          <div className="relative">
+            <select
+              value={destinationFolderId}
+              onChange={(e) => setDestinationFolderId(e.target.value)}
+              disabled={isUploading || isComplete}
+              className="w-full px-3 py-2 bg-black/40 border border-white/10 rounded-xl text-xs text-white focus:outline-none focus:border-sky-500 appearance-none min-h-[44px]"
+            >
+              <option value={parentId || ""}>Current Folder</option>
+              {availableFolders.map((f: any) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+            <Folder className="w-4 h-4 text-sky-400 absolute right-3 top-3.5 pointer-events-none" />
+          </div>
+        </div>
+
         {/* Tags input */}
         <div className="mt-4 space-y-2">
           <label className="block text-xs font-medium text-muted-foreground">
@@ -253,14 +302,14 @@ export const UploadModal: React.FC<UploadModalProps> = ({
               onChange={(e) => setTagInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), handleAddTag())}
               placeholder="e.g. Tax, Medical, Identity"
-              disabled={isUploading}
-              className="flex-1 px-3 py-2 bg-black/40 border border-white/10 rounded-xl text-xs text-white focus:outline-none focus:border-sky-500"
+              disabled={isUploading || isComplete}
+              className="flex-1 px-3 py-2 bg-black/40 border border-white/10 rounded-xl text-xs text-white focus:outline-none focus:border-sky-500 min-h-[44px]"
             />
             <button
               type="button"
               onClick={handleAddTag}
-              disabled={isUploading || !tagInput.trim()}
-              className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-xs text-white disabled:opacity-50"
+              disabled={isUploading || isComplete || !tagInput.trim()}
+              className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-xs text-white disabled:opacity-50 min-h-[44px]"
             >
               Add
             </button>
@@ -289,23 +338,23 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         {/* Notes input */}
         <div className="mt-4 space-y-1">
           <label className="block text-xs font-medium text-muted-foreground">
-            Notes / Reference (Optional)
+            Notes (Optional)
           </label>
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            placeholder="Add relevant context or description..."
+            placeholder="Add a short note or description..."
             rows={2}
-            disabled={isUploading}
+            disabled={isUploading || isComplete}
             className="w-full px-3 py-2 bg-black/40 border border-white/10 rounded-xl text-xs text-white focus:outline-none focus:border-sky-500"
           />
         </div>
 
-        {/* Upload Progress Bar */}
+        {/* Upload Progress Bar / Done Message */}
         {isUploading && (
           <div className="mt-4 space-y-2">
             <div className="flex justify-between text-xs">
-              <span className="text-sky-400 font-medium">Uploading directly to Google Drive...</span>
+              <span className="text-sky-400 font-medium">Uploading file...</span>
               <span className="font-mono text-white">{progress}%</span>
             </div>
             <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
@@ -317,9 +366,16 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           </div>
         )}
 
+        {isComplete && (
+          <div className="mt-4 p-3 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2 animate-fadeIn">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+            <span className="font-semibold">Done! File uploaded successfully.</span>
+          </div>
+        )}
+
         {/* Error alert */}
         {errorMsg && (
-          <div className="mt-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-center gap-2">
+          <div className="mt-4 p-3 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-center gap-2">
             <AlertCircle className="w-4 h-4 flex-shrink-0" />
             <span>{errorMsg}</span>
           </div>
@@ -331,17 +387,22 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             type="button"
             onClick={onClose}
             disabled={isUploading}
-            className="px-4 py-2 text-xs rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground"
+            className="px-4 py-2.5 text-xs rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white min-h-[44px] transition"
           >
             Cancel
           </button>
           <button
             type="button"
             onClick={handleUpload}
-            disabled={!selectedFile || isUploading}
-            className="flex items-center gap-2 px-5 py-2.5 text-xs font-semibold rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white shadow-lg shadow-sky-500/25 transition-all disabled:opacity-50"
+            disabled={!selectedFile || isUploading || isComplete}
+            className="flex items-center gap-2 px-5 py-2.5 text-xs font-semibold rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white shadow-lg shadow-sky-500/25 transition-all disabled:opacity-50 min-h-[44px]"
           >
-            {isUploading ? (
+            {isComplete ? (
+              <>
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Uploaded</span>
+              </>
+            ) : isUploading ? (
               <>
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 <span>Uploading ({progress}%)</span>
@@ -349,7 +410,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             ) : (
               <>
                 <Upload className="w-3.5 h-3.5" />
-                <span>Start Direct Upload</span>
+                <span>Upload</span>
               </>
             )}
           </button>

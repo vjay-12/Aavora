@@ -73,7 +73,7 @@ export const LoginPage: React.FC = () => {
         </h1>
 
         <p className="text-sm text-muted-foreground mb-8 max-w-sm leading-relaxed">
-          Powered directly by your Google Drive storage and low-latency Neon Postgres. Encrypted on your device, accessible anywhere.
+          Your private family document cloud. Safe on your device, accessible anywhere.
         </p>
 
         {/* Sign in with Google Button */}
@@ -108,25 +108,25 @@ export const LoginPage: React.FC = () => {
           <div className="p-3 rounded-xl bg-white/5 border border-white/5">
             <Lock className="w-4 h-4 text-sky-400 mb-2" />
             <div className="font-semibold text-white">Device Lock</div>
-            <div className="text-[11px] text-muted-foreground mt-0.5">Biometric & PBKDF2</div>
+            <div className="text-[11px] text-muted-foreground mt-0.5">Touch ID & PIN</div>
           </div>
           <div className="p-3 rounded-xl bg-white/5 border border-white/5">
             <Database className="w-4 h-4 text-indigo-400 mb-2" />
-            <div className="font-semibold text-white">Neon DB</div>
-            <div className="text-[11px] text-muted-foreground mt-0.5">Instant activity sync</div>
+            <div className="font-semibold text-white">Family Sync</div>
+            <div className="text-[11px] text-muted-foreground mt-0.5">Always up to date</div>
           </div>
           <div className="p-3 rounded-xl bg-white/5 border border-white/5">
             <CheckCircle2 className="w-4 h-4 text-emerald-400 mb-2" />
             <div className="font-semibold text-white">Offline Ready</div>
-            <div className="text-[11px] text-muted-foreground mt-0.5">AES-GCM encryption</div>
+            <div className="text-[11px] text-muted-foreground mt-0.5">Save on device</div>
           </div>
         </div>
       </main>
 
       {/* Footer */}
       <footer className="w-full max-w-5xl mx-auto flex items-center justify-between text-[11px] text-muted-foreground pt-4 border-t border-white/5 z-10">
-        <div>Aavora PWA Vault &copy; 2026</div>
-        <div>Protected by Google OAuth & WebAuthn</div>
+        <div>Aavora Vault &copy; 2026</div>
+        <div>Protected by Google Sign-In & device security</div>
       </footer>
     </div>
   );

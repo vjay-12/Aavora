@@ -463,26 +463,6 @@ describe("Document Viewer & File Streaming (/api/drive/file)", () => {
           { status: 200 }
         );
       }
-      // Copy call
-      if (urlStr.includes("/files/sample_word_id/copy")) {
-        copyCalled = true;
-        const parsedBody = JSON.parse(options.body);
-        expect(parsedBody.mimeType).toBe("application/vnd.google-apps.document");
-        return new Response(JSON.stringify({ id: "temp_google_doc_999" }), { status: 200 });
-      }
-      // Export call
-      if (urlStr.includes("/files/temp_google_doc_999/export?mimeType=application/pdf")) {
-        exportCalled = true;
-        return new Response(convertedPdfBytes, {
-          status: 200,
-          headers: { "Content-Type": "application/pdf" },
-        });
-      }
-      // Cleanup delete call
-      if (urlStr.includes("/files/temp_google_doc_999?supportsAllDrives=true") && options?.method === "DELETE") {
-        cleanupCalled = true;
-        return new Response("", { status: 204 });
-      }
       return new Response("Not found", { status: 404 });
     };
 
@@ -494,14 +474,11 @@ describe("Document Viewer & File Streaming (/api/drive/file)", () => {
 
     await driveHandler(req, fakeRes.res);
 
-    expect(copyCalled).toBe(true);
-    expect(exportCalled).toBe(true);
-    expect(cleanupCalled).toBe(true);
-    expect(fakeRes.getCode()).toBe(200);
-    expect(fakeRes.getHeader("content-type")).toBe("application/pdf");
-    expect(fakeRes.getHeader("content-disposition")).toContain("inline");
-    expect(fakeRes.getHeader("content-disposition")).toContain('filename="Minutes.pdf"');
-    expect(fakeRes.getBuffer().toString("utf-8")).toContain("%PDF-1.4");
+    // In adherence to strict Zero-Delete Data Safety policy (no automatic files.delete or temp copy creation),
+    // Word files return 415 directing users to download the original file.
+    expect(fakeRes.getCode()).toBe(415);
+    const body = fakeRes.getBody();
+    expect(body.code).toBe("CONVERSION_UNAVAILABLE");
   });
 
   it("returns 415 with CONVERSION_UNAVAILABLE if Word copy-conversion fails", async () => {

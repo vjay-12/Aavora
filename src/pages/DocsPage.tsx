@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../context/AuthContext";
 import { formatBytes, formatDate } from "../lib/utils";
 import {
@@ -30,9 +30,13 @@ import {
   Square,
   RotateCcw,
   X,
-  Download,
+  Star,
+  Pencil,
+  FolderInput,
+  HardDrive,
 } from "lucide-react";
-import { DELETE_RESTRICTED_MESSAGE } from "../config/features";
+import { DELETE_RESTRICTED_MESSAGE, MOVE_TO_BIN_MESSAGE } from "../config/features";
+import { saveFileOffline, removeOfflineFile, listOfflineFiles } from "../lib/offline-crypto";
 
 interface DriveItem {
   id: string;
@@ -91,6 +95,148 @@ export const DocsPage: React.FC = () => {
 
   const [isSeeding, setIsSeeding] = useState(false);
   const [seedMessage, setSeedMessage] = useState<string | null>(null);
+
+  const queryClient = useQueryClient();
+  const [renameModal, setRenameModal] = useState<{ isOpen: boolean; item: DriveItem | null; newName: string }>({
+    isOpen: false,
+    item: null,
+    newName: "",
+  });
+  const [moveModal, setMoveModal] = useState<{ isOpen: boolean; item: DriveItem | null; targetFolderId: string }>({
+    isOpen: false,
+    item: null,
+    targetFolderId: "",
+  });
+  const [folderConfirmInput, setFolderConfirmInput] = useState("");
+  const [offlineMap, setOfflineMap] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    listOfflineFiles().then((list) => {
+      const map: Record<string, boolean> = {};
+      for (const f of list) map[f.driveId] = true;
+      setOfflineMap(map);
+    });
+  }, []);
+
+  const { data: rootFoldersData } = useQuery({
+    queryKey: ["vault-folders-for-move"],
+    queryFn: async () => {
+      const res = await fetch("/api/drive/list");
+      if (!res.ok) return [];
+      const d = await res.json();
+      return (d.items || d.files || []).filter((i: any) => i.isFolder);
+    },
+    enabled: moveModal.isOpen,
+    staleTime: 60000,
+  });
+  const availableFolders = rootFoldersData || [];
+
+  const handleToggleStar = async (item: DriveItem | DocItem, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    const newStarred = !(item as any).starred;
+
+    const prevData = queryClient.getQueryData(["drive-list", folderId]);
+    queryClient.setQueryData(["drive-list", folderId], (old: any) => {
+      if (!old) return old;
+      const updateList = (list: any[]) =>
+        list.map((it) => (it.id === item.id ? { ...it, starred: newStarred } : it));
+      return {
+        ...old,
+        items: updateList(old.items || []),
+        files: updateList(old.files || []),
+      };
+    });
+
+    if (selectedDoc && selectedDoc.id === item.id) {
+      setSelectedDoc((prev) => (prev ? { ...prev, starred: newStarred } : null));
+    }
+
+    try {
+      const res = await fetch("/api/stars", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          driveId: item.id,
+          name: item.name,
+          isStarred: newStarred,
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to update star");
+      queryClient.invalidateQueries({ queryKey: ["starred-files"] });
+    } catch {
+      queryClient.setQueryData(["drive-list", folderId], prevData);
+      if (selectedDoc && selectedDoc.id === item.id) {
+        setSelectedDoc((prev) => (prev ? { ...prev, starred: !newStarred } : null));
+      }
+      setRestrictedToast("Could not update star. Please try again.");
+    }
+  };
+
+  const handleToggleOffline = async (item: DriveItem, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    const isSaved = Boolean(offlineMap[item.id]);
+    if (isSaved) {
+      await removeOfflineFile(item.id);
+      setOfflineMap((prev) => ({ ...prev, [item.id]: false }));
+      setUploadToast({ show: true, fileName: `Removed "${item.name}" from this device.` });
+    } else {
+      try {
+        const res = await fetch(`/api/drive/download?id=${item.id}`);
+        if (!res.ok) throw new Error("Download failed");
+        const arrayBuf = await res.arrayBuffer();
+        await saveFileOffline(item.id, item.name, item.mimeType, arrayBuf);
+        setOfflineMap((prev) => ({ ...prev, [item.id]: true }));
+        setUploadToast({ show: true, fileName: `Saved "${item.name}" on this device.` });
+      } catch (err) {
+        console.error("Failed to save offline:", err);
+        setRestrictedToast("Could not save to this device. Please try again.");
+      }
+    }
+  };
+
+  const handleRename = async () => {
+    if (!renameModal.item || !renameModal.newName.trim()) return;
+    try {
+      const res = await fetch("/api/drive/rename", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          itemId: renameModal.item.id,
+          newName: renameModal.newName.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to rename");
+      const updatedName = data.item?.name || renameModal.newName.trim();
+      setRenameModal({ isOpen: false, item: null, newName: "" });
+      refetch();
+      setUploadToast({ show: true, fileName: `Renamed to "${updatedName}".` });
+    } catch (err: any) {
+      alert(err.message || "Failed to rename");
+    }
+  };
+
+  const handleMove = async () => {
+    if (!moveModal.item || !moveModal.targetFolderId) return;
+    try {
+      const res = await fetch("/api/drive/move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          itemId: moveModal.item.id,
+          newParentId: moveModal.targetFolderId,
+          currentParentId: folderId || data?.rootFolderId,
+        }),
+      });
+      const resData = await res.json();
+      if (!res.ok) throw new Error(resData.error || "Failed to move");
+      setMoveModal({ isOpen: false, item: null, targetFolderId: "" });
+      refetch();
+      setUploadToast({ show: true, fileName: `Moved "${moveModal.item.name}".` });
+    } catch (err: any) {
+      alert(err.message || "Failed to move");
+    }
+  };
 
   // Modals & detail panel state
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
@@ -324,12 +470,16 @@ export const DocsPage: React.FC = () => {
         }),
       });
 
+      const resData = await res.json();
       if (!res.ok) {
-        const resData = await res.json();
+        if (resData.code === "FOLDER_NOT_EMPTY") {
+          throw new Error("This folder is not empty. Please remove or move its contents first.");
+        }
         throw new Error(resData.error || "Failed to move items to Bin");
       }
 
       setConfirmTrashModal(null);
+      setFolderConfirmInput("");
       setSelectedIds((prev) => prev.filter((id) => !fileIds.includes(id)));
       if (selectedDoc && fileIds.includes(selectedDoc.id)) {
         setSelectedDoc(null);
@@ -339,10 +489,7 @@ export const DocsPage: React.FC = () => {
       setUndoToast({
         show: true,
         items: itemsToTrash,
-        message:
-          itemsToTrash.length > 1
-            ? `Moved ${itemsToTrash.length} items to Bin.`
-            : `Moved "${itemsToTrash[0].name}" to Bin.`,
+        message: MOVE_TO_BIN_MESSAGE,
       });
     } catch (err: any) {
       alert(err.message || "Failed to move to Bin");
@@ -763,6 +910,8 @@ export const DocsPage: React.FC = () => {
                     const FileIcon = getFileIcon(file.mimeType);
                     const isSelected = selectedIds.includes(file.id);
                     const isMenuOpen = openMenuId === file.id;
+                    const isSaved = Boolean(offlineMap[file.id]);
+                    const isStarred = Boolean((file as any).starred);
 
                     return (
                       <div
@@ -807,93 +956,141 @@ export const DocsPage: React.FC = () => {
                             </div>
                           </div>
 
-                          {/* 3-dots Card Menu Button */}
-                          <div className="relative flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center gap-1 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                            {/* Inline Star Button */}
                             <button
                               type="button"
-                              data-testid={`card-menu-trigger-${file.id}`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setOpenMenuId(isMenuOpen ? null : file.id);
-                              }}
-                              className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white transition"
-                              title="File actions"
-                              aria-label="File actions"
+                              onClick={(e) => handleToggleStar(file, e)}
+                              aria-pressed={isStarred}
+                              title={isStarred ? "Remove star" : "Star"}
+                              aria-label={isStarred ? "Remove star" : "Star"}
+                              className="min-h-[44px] min-w-[44px] p-2.5 rounded-xl hover:bg-white/5 transition flex items-center justify-center active:scale-95"
                             >
-                              <MoreVertical className="w-3.5 h-3.5" />
+                              <Star
+                                className={`w-4 h-4 transition-colors ${
+                                  isStarred
+                                    ? "fill-amber-400 stroke-amber-400 text-amber-400"
+                                    : "text-muted-foreground/60 hover:text-amber-400"
+                                }`}
+                              />
                             </button>
 
-                            {/* Dropdown Menu */}
-                            {isMenuOpen && (
-                              <div
-                                data-testid={`card-menu-dropdown-${file.id}`}
-                                className="absolute right-0 top-8 z-40 w-44 rounded-xl bg-[#0d131f] border border-white/10 shadow-2xl p-1.5 space-y-1 text-xs animate-scaleUp"
+                            {/* 3-dots Card Menu Button */}
+                            <div className="relative flex-shrink-0">
+                              <button
+                                type="button"
+                                data-testid={`card-menu-trigger-${file.id}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOpenMenuId(isMenuOpen ? null : file.id);
+                                }}
+                                className="min-h-[44px] min-w-[44px] p-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white transition flex items-center justify-center active:scale-95"
+                                title="File actions"
+                                aria-label="File actions"
                               >
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setOpenMenuId(null);
-                                    setPreviewDoc(file);
-                                  }}
-                                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-sky-400 hover:text-sky-300 transition font-medium"
+                                <MoreVertical className="w-4 h-4" />
+                              </button>
+
+                              {/* Dropdown Menu (Without Preview and Download) */}
+                              {isMenuOpen && (
+                                <div
+                                  data-testid={`card-menu-dropdown-${file.id}`}
+                                  className="absolute right-0 top-10 z-50 w-52 rounded-2xl bg-[#0d131f] border border-white/10 shadow-2xl p-1.5 space-y-1 text-xs animate-scaleUp"
                                 >
-                                  <FileText className="w-3.5 h-3.5" />
-                                  <span>Preview File</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setOpenMenuId(null);
-                                    setSelectedDoc(file);
-                                  }}
-                                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-muted-foreground hover:text-white transition"
-                                >
-                                  <FileText className="w-3.5 h-3.5 text-muted-foreground" />
-                                  <span>View Details</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setOpenMenuId(null);
-                                    window.open(`/api/drive/download?id=${file.id}`, "_blank");
-                                  }}
-                                  className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-muted-foreground hover:text-white transition"
-                                >
-                                  <Download className="w-3.5 h-3.5 text-emerald-400" />
-                                  <span>Download</span>
-                                </button>
-                                <div className="border-t border-white/5 my-1" />
-                                <button
-                                  type="button"
-                                  data-testid={`card-menu-delete-${file.id}`}
-                                  onClick={(e) => {
-                                    setOpenMenuId(null);
-                                    if (!canDelete) {
-                                      showDeleteRestricted(e);
-                                      return;
-                                    }
-                                    handleInitiateTrash([file]);
-                                  }}
-                                  aria-disabled={!canDelete}
-                                  title={canDelete ? "Move to Bin" : DELETE_RESTRICTED_MESSAGE}
-                                  className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg transition ${
-                                    canDelete
-                                      ? "hover:bg-rose-500/10 text-rose-400 cursor-pointer"
-                                      : "opacity-50 cursor-not-allowed text-muted-foreground/50 hover:bg-transparent"
-                                  }`}
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                  <span>Move to Bin</span>
-                                </button>
-                              </div>
-                            )}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenMenuId(null);
+                                      setSelectedDoc(file as any);
+                                    }}
+                                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                  >
+                                    <FileText className="w-3.5 h-3.5 text-sky-400" />
+                                    <span>View details</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      setOpenMenuId(null);
+                                      handleToggleStar(file, e);
+                                    }}
+                                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                  >
+                                    <Star
+                                      className={`w-3.5 h-3.5 ${
+                                        isStarred
+                                          ? "fill-amber-400 stroke-amber-400 text-amber-400"
+                                          : "text-amber-400"
+                                      }`}
+                                    />
+                                    <span>{isStarred ? "Remove star" : "Star"}</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      setOpenMenuId(null);
+                                      handleToggleOffline(file, e);
+                                    }}
+                                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                  >
+                                    <HardDrive className={`w-3.5 h-3.5 ${isSaved ? "text-emerald-400" : "text-muted-foreground"}`} />
+                                    <span>{isSaved ? "Remove from this device" : "Save on this device"}</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenMenuId(null);
+                                      setRenameModal({ isOpen: true, item: file, newName: file.name });
+                                    }}
+                                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                  >
+                                    <Pencil className="w-3.5 h-3.5 text-indigo-400" />
+                                    <span>Rename</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenMenuId(null);
+                                      setMoveModal({ isOpen: true, item: file, targetFolderId: "" });
+                                    }}
+                                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                  >
+                                    <FolderInput className="w-3.5 h-3.5 text-purple-400" />
+                                    <span>Move</span>
+                                  </button>
+                                  <div className="border-t border-white/5 my-1" />
+                                  <button
+                                    type="button"
+                                    data-testid={`card-menu-delete-${file.id}`}
+                                    onClick={(e) => {
+                                      setOpenMenuId(null);
+                                      if (!canDelete) {
+                                        showDeleteRestricted(e);
+                                        return;
+                                      }
+                                      handleInitiateTrash([file]);
+                                    }}
+                                    aria-disabled={!canDelete}
+                                    title={canDelete ? "Move to Bin" : DELETE_RESTRICTED_MESSAGE}
+                                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition min-h-[36px] ${
+                                      canDelete
+                                        ? "hover:bg-rose-500/10 text-rose-400 cursor-pointer"
+                                        : "opacity-50 cursor-not-allowed text-muted-foreground/50 hover:bg-transparent"
+                                    }`}
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                    <span>Move to Bin</span>
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </div>
 
                         <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-2 border-t border-white/5">
                           <span className="flex items-center gap-1 truncate max-w-[120px]">
                             <User className="w-3 h-3 text-indigo-400 flex-shrink-0" />
-                            <span className="truncate">{file.lastModifyingUser || "Vault User"}</span>
+                            <span className="truncate">{(file as any).uploadedByName || file.lastModifyingUser || "Unknown"}</span>
                           </span>
                           <span className="flex items-center gap-1">
                             <Clock className="w-3 h-3 text-sky-400 flex-shrink-0" />
@@ -910,6 +1107,9 @@ export const DocsPage: React.FC = () => {
                   {files.map((file) => {
                     const FileIcon = getFileIcon(file.mimeType);
                     const isSelected = selectedIds.includes(file.id);
+                    const isMenuOpen = openMenuId === file.id;
+                    const isSaved = Boolean(offlineMap[file.id]);
+                    const isStarred = Boolean((file as any).starred);
 
                     return (
                       <div
@@ -944,45 +1144,141 @@ export const DocsPage: React.FC = () => {
                             </h4>
                             <p className="text-[11px] text-muted-foreground">
                               {file.size ? formatBytes(parseInt(file.size, 10)) : "Document"} •{" "}
+                              {(file as any).uploadedByName ? `By ${(file as any).uploadedByName} • ` : ""}
                               {formatDate(file.modifiedTime)}
                             </p>
                           </div>
                         </div>
 
-                        {/* Row Action Buttons */}
-                        <div className="flex items-center gap-2 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                        {/* Row Action Controls: Star + Unified 3-dots Menu */}
+                        <div className="flex items-center gap-1 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+                          {/* Inline Star Button */}
                           <button
                             type="button"
-                            onClick={() => window.open(`/api/drive/download?id=${file.id}`, "_blank")}
-                            className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white transition"
-                            title="Download"
-                            aria-label="Download"
+                            onClick={(e) => handleToggleStar(file, e)}
+                            aria-pressed={isStarred}
+                            title={isStarred ? "Remove star" : "Star"}
+                            aria-label={isStarred ? "Remove star" : "Star"}
+                            className="min-h-[44px] min-w-[44px] p-2.5 rounded-xl hover:bg-white/5 transition flex items-center justify-center active:scale-95"
                           >
-                            <Download className="w-3.5 h-3.5" />
+                            <Star
+                              className={`w-4 h-4 transition-colors ${
+                                isStarred
+                                  ? "fill-amber-400 stroke-amber-400 text-amber-400"
+                                  : "text-muted-foreground/60 hover:text-amber-400"
+                              }`}
+                            />
                           </button>
 
-                          {/* Row Delete Button */}
-                          <button
-                            type="button"
-                            data-testid={`file-row-delete-${file.id}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (!canDelete) {
-                                showDeleteRestricted(e);
-                                return;
-                              }
-                              handleInitiateTrash([file]);
-                            }}
-                            aria-disabled={!canDelete}
-                            title={canDelete ? "Move to Bin" : DELETE_RESTRICTED_MESSAGE}
-                            className={`p-1.5 rounded-lg border transition ${
-                              canDelete
-                                ? "bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border-rose-500/20 cursor-pointer active:scale-95"
-                                : "bg-white/5 text-muted-foreground/40 border-white/5 opacity-50 cursor-not-allowed hover:bg-white/5"
-                            }`}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          {/* 3-dots Menu Button */}
+                          <div className="relative flex-shrink-0">
+                            <button
+                              type="button"
+                              data-testid={`card-menu-trigger-${file.id}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOpenMenuId(isMenuOpen ? null : file.id);
+                              }}
+                              className="min-h-[44px] min-w-[44px] p-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white transition flex items-center justify-center active:scale-95"
+                              title="File actions"
+                              aria-label="File actions"
+                            >
+                              <MoreVertical className="w-4 h-4" />
+                            </button>
+
+                            {/* Dropdown Menu (Without Preview and Download) */}
+                            {isMenuOpen && (
+                              <div
+                                data-testid={`card-menu-dropdown-${file.id}`}
+                                className="absolute right-0 top-10 z-50 w-52 rounded-2xl bg-[#0d131f] border border-white/10 shadow-2xl p-1.5 space-y-1 text-xs animate-scaleUp"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    setSelectedDoc(file as any);
+                                  }}
+                                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                >
+                                  <FileText className="w-3.5 h-3.5 text-sky-400" />
+                                  <span>View details</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    setOpenMenuId(null);
+                                    handleToggleStar(file, e);
+                                  }}
+                                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                >
+                                  <Star
+                                    className={`w-3.5 h-3.5 ${
+                                      isStarred
+                                        ? "fill-amber-400 stroke-amber-400 text-amber-400"
+                                        : "text-amber-400"
+                                    }`}
+                                  />
+                                  <span>{isStarred ? "Remove star" : "Star"}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    setOpenMenuId(null);
+                                    handleToggleOffline(file, e);
+                                  }}
+                                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                >
+                                  <HardDrive className={`w-3.5 h-3.5 ${isSaved ? "text-emerald-400" : "text-muted-foreground"}`} />
+                                  <span>{isSaved ? "Remove from this device" : "Save on this device"}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    setRenameModal({ isOpen: true, item: file, newName: file.name });
+                                  }}
+                                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                >
+                                  <Pencil className="w-3.5 h-3.5 text-indigo-400" />
+                                  <span>Rename</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    setMoveModal({ isOpen: true, item: file, targetFolderId: "" });
+                                  }}
+                                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                >
+                                  <FolderInput className="w-3.5 h-3.5 text-purple-400" />
+                                  <span>Move</span>
+                                </button>
+                                <div className="border-t border-white/5 my-1" />
+                                <button
+                                  type="button"
+                                  data-testid={`file-row-delete-${file.id}`}
+                                  onClick={(e) => {
+                                    setOpenMenuId(null);
+                                    if (!canDelete) {
+                                      showDeleteRestricted(e);
+                                      return;
+                                    }
+                                    handleInitiateTrash([file]);
+                                  }}
+                                  aria-disabled={!canDelete}
+                                  title={canDelete ? "Move to Bin" : DELETE_RESTRICTED_MESSAGE}
+                                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition min-h-[36px] ${
+                                    canDelete
+                                      ? "hover:bg-rose-500/10 text-rose-400 cursor-pointer"
+                                      : "opacity-50 cursor-not-allowed text-muted-foreground/50 hover:bg-transparent"
+                                  }`}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>Move to Bin</span>
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     );
@@ -1007,13 +1303,35 @@ export const DocsPage: React.FC = () => {
                 {confirmTrashModal.items.length === 1
                   ? `Are you sure you want to move "${confirmTrashModal.items[0].name}" to the Bin?`
                   : `Are you sure you want to move ${confirmTrashModal.items.length} items to the Bin?`}
-                {" "}You can restore them at any time from the Drive Bin.
+              </p>
+              <p className="text-[11px] text-amber-300/90 mt-2 bg-amber-500/10 border border-amber-500/20 p-2.5 rounded-xl">
+                {MOVE_TO_BIN_MESSAGE}
               </p>
             </div>
+
+            {/* Folder name typing confirmation */}
+            {confirmTrashModal.items.some((i) => i.isFolder) && (
+              <div className="space-y-1.5 text-left">
+                <label className="text-[11px] font-medium text-muted-foreground">
+                  Type <strong>{confirmTrashModal.items.find((i) => i.isFolder)?.name}</strong> to confirm:
+                </label>
+                <input
+                  type="text"
+                  value={folderConfirmInput}
+                  onChange={(e) => setFolderConfirmInput(e.target.value)}
+                  placeholder={confirmTrashModal.items.find((i) => i.isFolder)?.name}
+                  className="w-full px-3 py-2 rounded-xl bg-black/40 border border-white/10 text-xs text-white placeholder-muted-foreground focus:outline-none focus:border-rose-500"
+                />
+              </div>
+            )}
+
             <div className="flex gap-2 pt-2">
               <button
                 type="button"
-                onClick={() => setConfirmTrashModal(null)}
+                onClick={() => {
+                  setConfirmTrashModal(null);
+                  setFolderConfirmInput("");
+                }}
                 className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-white text-xs font-medium border border-white/10 transition"
               >
                 Cancel
@@ -1021,9 +1339,111 @@ export const DocsPage: React.FC = () => {
               <button
                 type="button"
                 onClick={handleConfirmTrash}
-                className="flex-1 py-2.5 rounded-xl bg-rose-500 hover:bg-rose-600 text-white text-xs font-semibold shadow-lg shadow-rose-500/20 transition active:scale-95"
+                disabled={
+                  confirmTrashModal.items.some((i) => i.isFolder) &&
+                  folderConfirmInput.trim() !== confirmTrashModal.items.find((i) => i.isFolder)?.name
+                }
+                className="flex-1 py-2.5 rounded-xl bg-rose-500 hover:bg-rose-600 text-white text-xs font-semibold shadow-lg shadow-rose-500/20 transition active:scale-95 disabled:opacity-40"
               >
                 Move to Bin
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename Modal */}
+      {renameModal.isOpen && renameModal.item && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-[#090d16] border border-white/10 p-6 rounded-3xl max-w-sm w-full space-y-4 shadow-2xl animate-scaleUp">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center">
+                <Pencil className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Rename</h3>
+                <p className="text-xs text-muted-foreground truncate max-w-[200px]">{renameModal.item.name}</p>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">New Name</label>
+              <input
+                type="text"
+                value={renameModal.newName}
+                onChange={(e) => setRenameModal((prev) => ({ ...prev, newName: e.target.value }))}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-black/40 border border-white/10 text-xs text-white placeholder-muted-foreground focus:outline-none focus:border-sky-500"
+                autoFocus
+              />
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setRenameModal({ isOpen: false, item: null, newName: "" })}
+                className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-white text-xs font-medium border border-white/10 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleRename}
+                disabled={!renameModal.newName.trim() || renameModal.newName.trim() === renameModal.item.name}
+                className="flex-1 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-white text-xs font-semibold shadow-lg shadow-sky-500/20 transition active:scale-95 disabled:opacity-50"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Move Modal */}
+      {moveModal.isOpen && moveModal.item && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-[#090d16] border border-white/10 p-6 rounded-3xl max-w-sm w-full space-y-4 shadow-2xl animate-scaleUp">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center">
+                <FolderInput className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Move Item</h3>
+                <p className="text-xs text-muted-foreground truncate max-w-[200px]">{moveModal.item.name}</p>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-muted-foreground mb-1">Destination Folder</label>
+              <select
+                value={moveModal.targetFolderId}
+                onChange={(e) => setMoveModal((prev) => ({ ...prev, targetFolderId: e.target.value }))}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-[#070b12] border border-white/10 text-xs text-white focus:outline-none focus:border-purple-500"
+              >
+                <option value="">Select a folder...</option>
+                <option value={data?.rootFolderId || ""}>Vault Root</option>
+                {availableFolders.map((f: any) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setMoveModal({ isOpen: false, item: null, targetFolderId: "" })}
+                className="flex-1 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-white text-xs font-medium border border-white/10 transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleMove}
+                disabled={!moveModal.targetFolderId}
+                className="flex-1 py-2.5 rounded-xl bg-purple-500 hover:bg-purple-400 text-white text-xs font-semibold shadow-lg shadow-purple-500/20 transition active:scale-95 disabled:opacity-50"
+              >
+                Move
               </button>
             </div>
           </div>

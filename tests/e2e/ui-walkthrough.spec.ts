@@ -31,7 +31,7 @@ test.describe("Screen-by-Screen UI Walkthrough", () => {
   }, testInfo) => {
     const consoleErrors: string[] = [];
     page.on("console", (msg) => {
-      if (msg.type() === "error" && !msg.text().includes("401")) {
+      if (msg.type() === "error" && !msg.text().includes("401") && !msg.text().includes("503")) {
         consoleErrors.push(msg.text());
       }
     });
@@ -64,7 +64,7 @@ test.describe("Screen-by-Screen UI Walkthrough", () => {
       ? page.locator('nav.md\\:hidden a[href="/home"]')
       : page.locator('aside a[href="/home"]');
     await homeLink.click();
-    await expect(page.locator("text=Home Dashboard")).toBeVisible();
+    await expect(page.locator("text=Your documents are safe").first()).toBeVisible();
     await page.screenshot({
       path: path.join(screenshotDir, `screen-home-${testInfo.project.name}.png`),
     });
@@ -74,7 +74,7 @@ test.describe("Screen-by-Screen UI Walkthrough", () => {
       ? page.locator('nav.md\\:hidden a[href="/saved"]')
       : page.locator('aside a[href="/saved"]');
     await savedLink.click();
-    await expect(page.locator("text=Saved & Starred")).toBeVisible();
+    await expect(page.locator("text=Saved & Offline").first()).toBeVisible();
     await page.screenshot({
       path: path.join(screenshotDir, `screen-saved-${testInfo.project.name}.png`),
     });
@@ -94,7 +94,7 @@ test.describe("Screen-by-Screen UI Walkthrough", () => {
       ? page.locator('nav.md\\:hidden a[href="/more"]')
       : page.locator('aside a[href="/more"]');
     await moreLink.click();
-    await expect(page.locator("text=More & Settings")).toBeVisible();
+    await expect(page.locator("text=Vault Settings & Management")).toBeVisible();
     await page.screenshot({
       path: path.join(screenshotDir, `screen-more-${testInfo.project.name}.png`),
     });

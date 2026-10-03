@@ -52,13 +52,13 @@ export const SetupLockModal: React.FC<SetupLockModalProps> = ({ isOpen, onClose 
           <div>
             <h2 className="text-lg font-semibold text-white">Setup Device Lock</h2>
             <p className="text-xs text-muted-foreground">
-              Protect this device & encrypt your offline documents
+              Protect this device & keep documents safe
             </p>
           </div>
         </div>
 
         <p className="text-xs text-muted-foreground mb-4 bg-white/5 p-3 rounded-xl border border-white/5 leading-relaxed">
-          This PIN and optional biometric lock remain <strong>strictly local to this device</strong>. They are never transmitted over the internet or saved in Neon.
+          This PIN and optional biometric lock remain <strong>strictly on this device</strong>. They are never transmitted over the internet or saved to the cloud.
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">

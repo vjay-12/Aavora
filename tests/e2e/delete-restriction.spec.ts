@@ -96,7 +96,7 @@ test.describe("Delete Restriction & Bin UI (Desktop & Mobile)", () => {
       });
     });
 
-    test("Direct visit to /bin redirects member to /docs with restriction message", async ({
+    test("Direct visit to /bin redirects to /docs when BIN_PAGE_ENABLED is false", async ({
       page,
     }) => {
       await page.goto("/bin");
@@ -104,11 +104,6 @@ test.describe("Delete Restriction & Bin UI (Desktop & Mobile)", () => {
 
       // Verify redirected to /docs
       expect(page.url()).toContain("/docs");
-
-      // Verify restricted toast appears
-      const toast = page.locator("[data-testid='delete-restricted-toast']");
-      await expect(toast).toBeVisible();
-      await expect(toast).toContainText(DELETE_RESTRICTED_MESSAGE);
     });
 
     test("Member sees disabled delete buttons in card menu, file row, detail panel, and bulk bar", async ({
@@ -135,6 +130,11 @@ test.describe("Delete Restriction & Bin UI (Desktop & Mobile)", () => {
       // 2. Switch to List/Row view
       const listViewBtn = page.getByRole("button", { name: "List View" });
       await listViewBtn.click();
+
+      // Open row 3-dots menu
+      const rowTrigger = page.locator("[data-testid='card-menu-trigger-test-file-1']");
+      await expect(rowTrigger).toBeVisible();
+      await rowTrigger.click();
 
       // Check file row delete button
       const rowDeleteBtn = page.locator("[data-testid='file-row-delete-test-file-1']");
@@ -182,18 +182,14 @@ test.describe("Delete Restriction & Bin UI (Desktop & Mobile)", () => {
       );
     });
 
-    test("More page: Drive Bin tab is disabled for member with restriction message", async ({
+    test("More page: Drive Bin tab is not visible to members when BIN_PAGE_ENABLED is false", async ({
       page,
     }) => {
       await page.goto("/more");
       await page.waitForLoadState("networkidle");
 
       const binTab = page.getByRole("button", { name: /Drive Bin/i });
-      await expect(binTab).toBeVisible();
-      await expect(binTab).toHaveAttribute("aria-disabled", "true");
-
-      await binTab.click({ force: true });
-      await expect(page.getByText(DELETE_RESTRICTED_MESSAGE).first()).toBeVisible();
+      await expect(binTab).not.toBeVisible();
     });
   });
 
@@ -336,15 +332,16 @@ test.describe("Delete Restriction & Bin UI (Desktop & Mobile)", () => {
       await undoBtn.click();
       await expect(undoToast).not.toBeVisible();
 
-      // 2. Direct visit to /bin redirects admin to More Drive Bin
+      // 2. Direct visit to /bin redirects to /docs when BIN_PAGE_ENABLED is false
       await page.goto("/bin");
       await page.waitForLoadState("networkidle");
-      expect(page.url()).toContain("/more?section=bin");
+      expect(page.url()).toContain("/docs");
 
-      // Verify Google Drive Bin section is visible
-      await expect(page.getByRole("heading", { name: "Google Drive Bin" })).toBeVisible();
-      await expect(page.getByText("Old_Doc.pdf")).toBeVisible();
-      await expect(page.getByRole("button", { name: "Restore" })).toBeVisible();
+      // Verify Drive Bin tab is also hidden on MorePage
+      await page.goto("/more");
+      await page.waitForLoadState("networkidle");
+      const binTab = page.getByRole("button", { name: /Drive Bin/i });
+      await expect(binTab).not.toBeVisible();
     });
   });
 });

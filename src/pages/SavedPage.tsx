@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listOfflineFiles, getOfflineFile, removeOfflineFile, OfflineFileMeta } from "../lib/offline-crypto";
 import { formatBytes, formatDate } from "../lib/utils";
 import { Star, Shield, Download, Trash2, FileText, ExternalLink, Bookmark, Eye } from "lucide-react";
@@ -7,6 +7,7 @@ import { DocumentPreview } from "../components/docs/DocumentPreview";
 import type { DocItem } from "../components/docs/DocDetailPanel";
 
 export const SavedPage: React.FC = () => {
+  const queryClient = useQueryClient();
   const [offlineFiles, setOfflineFiles] = useState<OfflineFileMeta[]>([]);
   const [activeTab, setActiveTab] = useState<"all" | "starred" | "offline">("all");
   const [previewDoc, setPreviewDoc] = useState<DocItem | null>(null);
@@ -21,7 +22,7 @@ export const SavedPage: React.FC = () => {
   }, []);
 
   // Fetch Starred files from Neon + Drive
-  const { data: starredData, isLoading: isStarredLoading } = useQuery({
+  const { data: starredData, isLoading: isStarredLoading, refetch: refetchStarred } = useQuery({
     queryKey: ["starred-files"],
     queryFn: async () => {
       const res = await fetch("/api/stars?includeFiles=true");
@@ -46,6 +47,29 @@ export const SavedPage: React.FC = () => {
     await loadOffline();
   };
 
+  const handleToggleStar = async (file: any, e: React.MouseEvent) => {
+    e.stopPropagation();
+    // Optimistic update
+    const previous = queryClient.getQueryData<{ files: any[] }>(["starred-files"]);
+    queryClient.setQueryData(["starred-files"], (old: any) => ({
+      ...old,
+      files: (old?.files || []).filter((f: any) => f.id !== file.id),
+    }));
+
+    try {
+      const res = await fetch("/api/stars", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ driveId: file.id, isStarred: false }),
+      });
+      if (!res.ok) throw new Error("Failed to remove star");
+      queryClient.invalidateQueries({ queryKey: ["drive-list"] });
+    } catch (err) {
+      queryClient.setQueryData(["starred-files"], previous);
+      console.error("Star toggle error:", err);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -53,13 +77,13 @@ export const SavedPage: React.FC = () => {
         <div>
           <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-medium mb-2">
             <Bookmark className="w-3.5 h-3.5" />
-            <span>Quick Access Vault</span>
+            <span>Quick Access</span>
           </div>
           <h1 className="text-2xl md:text-3xl font-extrabold text-white font-['Outfit']">
-            Saved & Offline Vault
+            Saved & Offline
           </h1>
           <p className="text-xs md:text-sm text-muted-foreground mt-0.5">
-            Your starred favorites and AES-GCM encrypted offline copies on this device.
+            Your starred favorites and files saved on this device.
           </p>
         </div>
 
@@ -87,7 +111,7 @@ export const SavedPage: React.FC = () => {
               activeTab === "offline" ? "bg-white/10 text-white" : "text-muted-foreground"
             }`}
           >
-            Offline ({offlineFiles.length})
+            Saved on device ({offlineFiles.length})
           </button>
         </div>
       </div>
@@ -99,7 +123,7 @@ export const SavedPage: React.FC = () => {
           <section className="space-y-4">
             <div className="flex items-center justify-between pb-2 border-b border-white/5">
               <div className="flex items-center gap-2">
-                <Star className="w-4 h-4 text-amber-400 fill-amber-400" />
+                <Star className="w-4 h-4 fill-amber-400 stroke-amber-400 text-amber-400" />
                 <h2 className="text-base font-bold text-white font-['Outfit']">
                   Starred Documents ({starredFiles.length})
                 </h2>
@@ -114,7 +138,7 @@ export const SavedPage: React.FC = () => {
               </div>
             ) : starredFiles.length === 0 ? (
               <div className="p-8 rounded-2xl bg-white/5 border border-white/5 text-center text-xs text-muted-foreground">
-                No documents starred yet. Click the star icon on any document to add it here.
+                No documents starred yet. Tap the star on any document to add it here.
               </div>
             ) : (
               <div className="space-y-2.5">
@@ -140,9 +164,19 @@ export const SavedPage: React.FC = () => {
 
                     <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                       <button
+                        type="button"
+                        onClick={(e) => handleToggleStar(file, e)}
+                        className="p-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 transition"
+                        title="Remove star"
+                        aria-label="Remove star"
+                        aria-pressed="true"
+                      >
+                        <Star className="w-4 h-4 fill-amber-400 stroke-amber-400 text-amber-400" />
+                      </button>
+                      <button
                         onClick={() => setPreviewDoc(file)}
-                        className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-amber-300 transition-colors"
-                        title="Preview"
+                        className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white transition-colors"
+                        title="View"
                       >
                         <Eye className="w-4 h-4" />
                       </button>
@@ -163,26 +197,26 @@ export const SavedPage: React.FC = () => {
           </section>
         )}
 
-        {/* Offline Encrypted Vault Section */}
+        {/* Offline Vault Section */}
         {(activeTab === "all" || activeTab === "offline") && (
           <section className="space-y-4">
             <div className="flex items-center justify-between pb-2 border-b border-white/5">
               <div className="flex items-center gap-2">
                 <Shield className="w-4 h-4 text-emerald-400" />
                 <h2 className="text-base font-bold text-white font-['Outfit']">
-                  Local Encrypted Copies ({offlineFiles.length})
+                  Saved on this Device ({offlineFiles.length})
                 </h2>
               </div>
-              <span className="text-[10px] text-emerald-400 font-mono">
-                AES-GCM 256-bit
+              <span className="text-[10px] text-emerald-400 font-medium">
+                Ready offline
               </span>
             </div>
 
             {offlineFiles.length === 0 ? (
               <div className="p-8 rounded-2xl bg-white/5 border border-white/5 text-center text-xs text-muted-foreground space-y-1">
-                <p>No offline copies on this device.</p>
+                <p>No files saved on this device yet.</p>
                 <p className="text-[11px] text-muted-foreground/70">
-                  Open any document detail panel and tap &ldquo;Save Offline&rdquo; to store encrypted copies for offline access.
+                  Tap &ldquo;Save on this device&rdquo; from any document menu to access it without internet.
                 </p>
               </div>
             ) : (
@@ -210,7 +244,7 @@ export const SavedPage: React.FC = () => {
                       <button
                         onClick={() => handleOpenOffline(item)}
                         className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 text-xs font-medium flex items-center gap-1"
-                        title="Decrypt and View"
+                        title="Open file"
                       >
                         <ExternalLink className="w-3.5 h-3.5" />
                         <span>Open</span>
@@ -218,7 +252,7 @@ export const SavedPage: React.FC = () => {
                       <button
                         onClick={() => handleRemoveOffline(item.driveId)}
                         className="p-1.5 rounded-lg hover:bg-rose-500/10 text-muted-foreground hover:text-rose-400"
-                        title="Remove from device"
+                        title="Remove from this device"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>

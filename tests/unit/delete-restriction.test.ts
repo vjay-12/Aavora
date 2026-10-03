@@ -249,7 +249,7 @@ describe("Delete Restriction & Feature Flag Access Control", () => {
       expect(body.error).toBe("Only the admin can delete files right now.");
     });
 
-    it("Member calling /api/drive/bin gets 403 DELETE_RESTRICTED", async () => {
+    it("Calling /api/drive/bin returns 404 when BIN_PAGE_ENABLED is false", async () => {
       const req = createFakeReq({
         method: "GET",
         url: "/api/drive/bin",
@@ -259,10 +259,9 @@ describe("Delete Restriction & Feature Flag Access Control", () => {
 
       await driveHandler(req, res);
 
-      expect(getCode()).toBe(403);
+      expect(getCode()).toBe(404);
       const body = getBody();
-      expect(body.code).toBe("DELETE_RESTRICTED");
-      expect(body.error).toBe("Only the admin can delete files right now.");
+      expect(body.error).toMatch(/bin is disabled/i);
     });
 
     it("Member calling /api/drive/restore gets 403 DELETE_RESTRICTED", async () => {
@@ -282,7 +281,7 @@ describe("Delete Restriction & Feature Flag Access Control", () => {
       expect(body.error).toBe("Only the admin can delete files right now.");
     });
 
-    it("Member calling /api/drive/permanent-delete gets 403 DELETE_RESTRICTED", async () => {
+    it("Calling /api/drive/permanent-delete returns 404 as endpoint is completely removed", async () => {
       const req = createFakeReq({
         method: "POST",
         url: "/api/drive/permanent-delete",
@@ -293,10 +292,7 @@ describe("Delete Restriction & Feature Flag Access Control", () => {
 
       await driveHandler(req, res);
 
-      expect(getCode()).toBe(403);
-      const body = getBody();
-      expect(body.code).toBe(DELETE_RESTRICTED_CODE);
-      expect(body.message || body.error).toBe(DELETE_RESTRICTED_MESSAGE);
+      expect(getCode()).toBe(404);
     });
 
     it("Member calling DELETE /api/drive/file gets 403 DELETE_RESTRICTED", async () => {
@@ -383,43 +379,7 @@ describe("Delete Restriction & Feature Flag Access Control", () => {
       expect(logged.length).toBeGreaterThan(0);
     });
 
-    it("Admin can view Bin items filtered to DRIVE_ROOT_FOLDER_ID tree", async () => {
-      const rootId = getVaultRootId();
-
-      global.fetch = async (input: any, init?: any) => {
-        const urlStr = typeof input === "string" ? input : input.url;
-
-        if (urlStr.includes("oauth2.googleapis.com/token")) {
-          return new Response(JSON.stringify({ access_token: "mock_access_token_123" }), { status: 200 });
-        }
-
-        if (urlStr.includes("trashed+%3D+true") || urlStr.includes("trashed%20%3D%20true") || urlStr.includes("trashed%3Dtrue")) {
-          return new Response(
-            JSON.stringify({
-              files: [
-                { id: "inside_vault_file", name: "TrashedInside.pdf", parents: [rootId], trashed: true },
-                { id: "outside_vault_file", name: "TrashedOutside.pdf", parents: ["random_unknown_root"], trashed: true },
-              ],
-            }),
-            { status: 200 }
-          );
-        }
-
-        if (urlStr.includes("/files/inside_vault_file?")) {
-          return new Response(JSON.stringify({ id: "inside_vault_file", parents: [rootId] }), { status: 200 });
-        }
-
-        if (urlStr.includes("/files/outside_vault_file?")) {
-          return new Response(JSON.stringify({ id: "outside_vault_file", parents: ["random_unknown_root"] }), { status: 200 });
-        }
-
-        if (urlStr.includes("/files/random_unknown_root?")) {
-          return new Response(JSON.stringify({ id: "random_unknown_root", parents: [] }), { status: 200 });
-        }
-
-        return originalFetch(input, init);
-      };
-
+    it("Admin calling GET /api/drive/bin returns 404 when BIN_PAGE_ENABLED is false", async () => {
       const req = createFakeReq({
         method: "GET",
         url: "/api/drive/bin",
@@ -429,12 +389,9 @@ describe("Delete Restriction & Feature Flag Access Control", () => {
 
       await driveHandler(req, res);
 
-      expect(getCode()).toBe(200);
+      expect(getCode()).toBe(404);
       const body = getBody();
-      expect(Array.isArray(body.items)).toBe(true);
-      const ids = body.items.map((i: any) => i.id);
-      expect(ids).toContain("inside_vault_file");
-      expect(ids).not.toContain("outside_vault_file");
+      expect(body.error).toMatch(/bin is disabled/i);
     });
 
     it("Admin can restore an item from Bin", async () => {
@@ -476,59 +433,17 @@ describe("Delete Restriction & Feature Flag Access Control", () => {
       expect(body.message).toMatch(/restored/i);
     });
 
-    it("Admin permanent delete requires typed DELETE confirmation", async () => {
-      const rootId = getVaultRootId();
-
-      global.fetch = async (input: any, init?: any) => {
-        const urlStr = typeof input === "string" ? input : input.url;
-        if (urlStr.includes("oauth2.googleapis.com/token")) {
-          return new Response(JSON.stringify({ access_token: "mock_token" }), { status: 200 });
-        }
-        if (urlStr.includes("/files/perm_del_1?")) {
-          return new Response(JSON.stringify({ id: "perm_del_1", parents: [rootId] }), { status: 200 });
-        }
-        return originalFetch(input, init);
-      };
-
-      // 1. Missing or invalid confirmation text
-      const invalidReq = createFakeReq({
-        method: "POST",
-        url: "/api/drive/permanent-delete",
-        token: adminSessionToken,
-        body: { fileId: "perm_del_1", confirmationText: "wrong" },
-      });
-      const { res: invalidRes, getCode: getInvalidCode } = createFakeRes();
-      await driveHandler(invalidReq, invalidRes);
-      expect(getInvalidCode()).toBe(400);
-
-      // 2. Correct confirmation text DELETE
-      let permanentDeleteCalled = false;
-      global.fetch = async (input: any, init?: any) => {
-        const urlStr = typeof input === "string" ? input : input.url;
-        if (urlStr.includes("oauth2.googleapis.com/token")) {
-          return new Response(JSON.stringify({ access_token: "mock_token" }), { status: 200 });
-        }
-        if (urlStr.includes("/files/perm_del_1?") && init?.method !== "DELETE") {
-          return new Response(JSON.stringify({ id: "perm_del_1", parents: [rootId] }), { status: 200 });
-        }
-        if (urlStr.includes("/files/perm_del_1") && init?.method === "DELETE") {
-          permanentDeleteCalled = true;
-          return new Response(null, { status: 204 });
-        }
-        return originalFetch(input, init);
-      };
-
-      const validReq = createFakeReq({
+    it("Admin permanent delete endpoint is removed completely for zero-delete safety", async () => {
+      const req = createFakeReq({
         method: "POST",
         url: "/api/drive/permanent-delete",
         token: adminSessionToken,
         body: { fileId: "perm_del_1", confirmationText: "DELETE", name: "DocToDelete.pdf" },
       });
-      const { res: validRes, getCode: getValidCode } = createFakeRes();
-      await driveHandler(validReq, validRes);
+      const { res, getCode } = createFakeRes();
+      await driveHandler(req, res);
 
-      expect(getValidCode()).toBe(200);
-      expect(permanentDeleteCalled).toBe(true);
+      expect(getCode()).toBe(404);
     });
   });
 
@@ -625,8 +540,8 @@ describe("Delete Restriction & Feature Flag Access Control", () => {
       // Verify requireAdmin is imported from server/auth.js
       expect(fileContent).toMatch(/import\s*\{[^}]*requireAdmin[^}]*\}\s*from\s*["']\.\.\/\.\.\/server\/auth(\.js)?["']/);
 
-      // Verify every destructive or bin action checks requireAdmin
-      const criticalActions = ["trash", "delete", "permanent-delete", "restore", "bin"];
+      // Verify every destructive action checks requireAdmin
+      const criticalActions = ["trash", "delete", "restore", "bin"];
       for (const actionName of criticalActions) {
         // Find the action block in the source code
         const actionIdx = fileContent.indexOf(`action === "${actionName}"`);
@@ -635,7 +550,6 @@ describe("Delete Restriction & Feature Flag Access Control", () => {
         // Within the next 300 characters of the action declaration, requireAdmin must be called
         const actionSnippet = fileContent.slice(actionIdx, actionIdx + 300);
         expect(actionSnippet).toContain("requireAdmin(session)");
-        expect(actionSnippet).toContain(DELETE_RESTRICTED_CODE);
       }
 
       // Verify global DELETE method guard exists

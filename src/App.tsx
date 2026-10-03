@@ -16,15 +16,17 @@ import { MorePage } from "./pages/MorePage";
 import { PwaUpdatePrompt } from "./components/common/PwaUpdatePrompt";
 import { Shield } from "lucide-react";
 
-import { canUserDelete, DELETE_RESTRICTED_MESSAGE } from "./config/features";
+import { canUserDelete, DELETE_RESTRICTED_MESSAGE, BIN_PAGE_ENABLED } from "./config/features";
 
 const BinRouteRedirect: React.FC = () => {
   const { user, isAdmin } = useAuth();
-  const canDelete = Boolean(isAdmin ?? user?.isAdmin);
-  if (canDelete) {
-    return <Navigate to="/more?section=bin" replace />;
+  if (BIN_PAGE_ENABLED) {
+    const canDelete = Boolean(isAdmin ?? user?.isAdmin);
+    if (canDelete) {
+      return <Navigate to="/more?section=bin" replace />;
+    }
   }
-  return <Navigate to={`/docs?msg=${encodeURIComponent(DELETE_RESTRICTED_MESSAGE)}`} replace />;
+  return <Navigate to="/docs" replace />;
 };
 
 const AppRoutes: React.FC = () => {

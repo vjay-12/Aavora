@@ -6,8 +6,16 @@
  */
 export const MEMBER_DELETE_ENABLED = false;
 
+/**
+ * Temporary feature flag: Bin page is disabled for everyone including admin.
+ * Deleted files can be restored from the admin's Google Drive Bin within 30 days.
+ * Set to true to re-enable the in-app Bin.
+ */
+export const BIN_PAGE_ENABLED = false;
+
 export const DELETE_RESTRICTED_CODE = "DELETE_RESTRICTED";
 export const DELETE_RESTRICTED_MESSAGE = "Only the admin can delete files right now.";
+export const MOVE_TO_BIN_MESSAGE = "Moved to the Drive Bin. You can restore it from Google Drive within 30 days.";
 
 /**
  * Client helper to check whether the current user is permitted to delete/trash/restore.

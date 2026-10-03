@@ -8,7 +8,7 @@ import {
   renameDriveItem,
   moveDriveItem,
   setDriveTrashed,
-  deleteDriveItemPermanently,
+  updateDriveAppProperties,
   getDriveStorageQuota,
   createResumableUploadSession,
   verifyOrFindUploadedFile,
@@ -21,11 +21,12 @@ import {
 } from "../../server/drive.js";
 import { json, error, parseJsonBody } from "../../server/response.js";
 import { db } from "../../server/db/index.js";
-import { activity } from "../../server/db/schema.js";
-import { eq, and } from "drizzle-orm";
+import { activity, stars } from "../../server/db/schema.js";
+import { eq, and, inArray } from "drizzle-orm";
 import {
   DELETE_RESTRICTED_CODE,
   DELETE_RESTRICTED_MESSAGE,
+  BIN_PAGE_ENABLED,
 } from "../../src/config/features.js";
 
 function getDriveAction(req: IncomingMessage): string {
@@ -113,23 +114,93 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
       const result = await listDriveItems(requestedFolderId, pageSize, pageToken);
 
-      const items = result.files.map((file) => ({
-        id: file.id,
-        name: file.name,
-        mimeType: file.mimeType,
-        isFolder: file.mimeType === "application/vnd.google-apps.folder",
-        size: file.size,
-        modifiedTime: file.modifiedTime,
-        createdTime: file.createdTime,
-        lastModifyingUser: (file as any).lastModifyingUser?.displayName || file.owners?.[0]?.displayName || "Vault Admin",
-        parents: file.parents,
-        thumbnailLink: file.thumbnailLink,
-        iconLink: file.iconLink,
-        webViewLink: file.webViewLink,
-        webContentLink: file.webContentLink,
-        tags: file.appProperties?.tags ? JSON.parse(file.appProperties.tags) : [],
-        notes: file.appProperties?.notes || "",
-      }));
+      // Fetch user's starred files
+      let starredSet = new Set<string>();
+      try {
+        const userStarred = await db
+          .select({ driveId: stars.driveId })
+          .from(stars)
+          .where(eq(stars.userId, session.email));
+        starredSet = new Set(userStarred.map((s) => s.driveId));
+      } catch (starErr) {
+        console.warn("[Drive List] Could not read user stars:", starErr);
+      }
+
+      // Resolve uploader for files lacking uploadedByName
+      const missingUploaderDriveIds = result.files
+        .filter((f) => !f.appProperties?.uploadedByName && f.mimeType !== "application/vnd.google-apps.folder")
+        .map((f) => f.id);
+
+      const activityUploaderMap = new Map<string, string>();
+      if (missingUploaderDriveIds.length > 0) {
+        try {
+          const actRows = await db
+            .select({ driveId: activity.driveId, userName: activity.userName, userId: activity.userId })
+            .from(activity)
+            .where(
+              and(
+                eq(activity.action, "upload"),
+                inArray(activity.driveId, missingUploaderDriveIds)
+              )
+            );
+          for (const row of actRows) {
+            if (row.driveId && (row.userName || row.userId)) {
+              activityUploaderMap.set(row.driveId, row.userName || row.userId);
+            }
+          }
+        } catch {
+          // Ignore lookup failure; will fall back to Unknown
+        }
+      }
+
+      const items = result.files.map((file) => {
+        const isFolder = file.mimeType === "application/vnd.google-apps.folder";
+        const props = file.appProperties ? { ...file.appProperties } : {};
+
+        let resolvedUploader = props.uploadedByName || props.uploadedBy;
+        if (!resolvedUploader) {
+          if (!isFolder) {
+            resolvedUploader = activityUploaderMap.get(file.id) || "Unknown";
+          } else {
+            resolvedUploader = "Unknown";
+          }
+          props.uploadedByName = resolvedUploader;
+        }
+
+        let parsedTags: string[] = [];
+        if (props.tags) {
+          if (typeof props.tags === "string" && props.tags.trim().startsWith("[")) {
+            try {
+              parsedTags = JSON.parse(props.tags);
+            } catch {
+              parsedTags = props.tags.split(",").map((t) => t.trim()).filter(Boolean);
+            }
+          } else if (typeof props.tags === "string") {
+            parsedTags = props.tags.split(",").map((t) => t.trim()).filter(Boolean);
+          }
+        }
+
+        return {
+          id: file.id,
+          name: file.name,
+          mimeType: file.mimeType,
+          isFolder,
+          size: file.size,
+          modifiedTime: file.modifiedTime,
+          createdTime: file.createdTime,
+          uploadedByName: resolvedUploader,
+          lastModifyingUser: resolvedUploader,
+          parents: file.parents,
+          thumbnailLink: file.thumbnailLink,
+          iconLink: file.iconLink,
+          webViewLink: file.webViewLink,
+          webContentLink: file.webContentLink,
+          starred: starredSet.has(file.id),
+          appProperties: props,
+          tags: parsedTags,
+          notes: props.notes || "",
+        };
+      });
 
       // Sort folders first, then alphabetically by name
       items.sort((a, b) => {
@@ -295,67 +366,13 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
             });
           }
         } else if (isWordDoc) {
-          let tempDocId: string | null = null;
-          try {
-            const copyRes = await fetch(
-              `https://www.googleapis.com/drive/v3/files/${fileId}/copy?supportsAllDrives=true`,
-              {
-                method: "POST",
-                headers: {
-                  Authorization: `Bearer ${accessToken}`,
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                  mimeType: "application/vnd.google-apps.document",
-                  name: `preview_temp_${Date.now()}`,
-                }),
-              }
-            );
-
-            if (!copyRes.ok) {
-              const errBody = await copyRes.text().catch(() => "");
-              console.warn("[Word Convert Copy Failed]:", copyRes.status, errBody);
-              throw new Error("Copy-conversion not supported for this file format");
-            }
-
-            const copyData = await copyRes.json();
-            tempDocId = copyData.id;
-
-            const exportRes = await fetch(
-              `https://www.googleapis.com/drive/v3/files/${tempDocId}/export?mimeType=application/pdf`,
-              { headers: { Authorization: `Bearer ${accessToken}` } }
-            );
-
-            if (!exportRes.ok) {
-              throw new Error(`Export of converted doc failed with status ${exportRes.status}`);
-            }
-
-            res.statusCode = 200;
-            res.setHeader("Content-Type", "application/pdf");
-            const cleanName = (fileMeta.name || "document").replace(/\.(docx|doc)$/i, "") + ".pdf";
-            const encodedName = encodeURIComponent(cleanName);
-            res.setHeader(
-              "Content-Disposition",
-              `inline; filename="${cleanName.replace(/"/g, "")}"; filename*=UTF-8''${encodedName}`
-            );
-
-            const arrayBuf = await exportRes.arrayBuffer();
-            res.setHeader("Content-Length", arrayBuf.byteLength.toString());
-            return res.end(Buffer.from(arrayBuf));
-          } catch (convertErr: any) {
-            console.error("[Word Conversion Error]:", convertErr);
-            return error(res, "Word preview conversion unavailable. Please download the original file to view.", 415, {
-              code: "CONVERSION_UNAVAILABLE",
-              fileName: fileMeta.name,
-            });
-          } finally {
-            if (tempDocId) {
-              fetch(`https://www.googleapis.com/drive/v3/files/${tempDocId}?supportsAllDrives=true`, {
-                method: "DELETE",
-                headers: { Authorization: `Bearer ${accessToken}` },
-              }).catch(() => {});
-            }
-          }
+          // Word files (.docx / .doc) cannot be rendered inline without temporary conversion.
+          // In adherence to strict Zero-Delete and Data Safety policy (no automatic file removals),
+          // Word files return 415 CONVERSION_UNAVAILABLE so users can download and view the original file safely.
+          return error(res, "Word preview conversion unavailable. Please download the original file to view.", 415, {
+            code: "CONVERSION_UNAVAILABLE",
+            fileName: fileMeta.name,
+          });
         }
       }
 
@@ -568,8 +585,12 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       });
     }
 
-    // 11. GET /api/drive/bin (Admin only: trashed items inside DRIVE_ROOT_FOLDER_ID tree)
+    // 11. GET /api/drive/bin (Disabled when BIN_PAGE_ENABLED is false)
     if (action === "bin") {
+      if (!BIN_PAGE_ENABLED) {
+        return error(res, "Bin is disabled", 404);
+      }
+
       if (!requireAdmin(session)) {
         return error(res, DELETE_RESTRICTED_MESSAGE, 403, { code: DELETE_RESTRICTED_CODE });
       }
@@ -604,42 +625,35 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       return json(res, { items: vaultItems });
     }
 
-    // 12. POST or DELETE /api/drive/permanent-delete (Admin only with typed confirmation)
-    if (action === "permanent-delete") {
+    // 12. POST /api/drive/edit-uploader (Admin only: update file uploader metadata)
+    if (action === "edit-uploader" || action === "uploader") {
       if (!requireAdmin(session)) {
-        return error(res, DELETE_RESTRICTED_MESSAGE, 403, { code: DELETE_RESTRICTED_CODE });
+        return error(res, "Only the admin can edit file uploader metadata.", 403);
       }
 
-      let fileId = url.searchParams.get("id");
-      let itemName = "Document";
-      let confirmationText = "";
-
-      if (method === "POST" || !fileId) {
-        const body = await parseJsonBody<{ fileId: string; name?: string; confirmationText?: string }>(req).catch(() => ({} as any));
-        if (body.fileId) fileId = body.fileId;
-        if (body.name) itemName = body.name;
-        if (body.confirmationText) confirmationText = body.confirmationText;
+      const body = await parseJsonBody<{ driveId: string; uploaderName: string }>(req).catch(() => ({} as any));
+      if (!body.driveId || !body.uploaderName?.trim()) {
+        return error(res, "driveId and uploaderName are required", 400);
       }
 
-      if (!fileId) return error(res, "Missing file ID", 400);
-
-      if (confirmationText && confirmationText !== "DELETE") {
-        return error(res, "Invalid confirmation text. Must type DELETE.", 400);
-      }
-
-      await assertInsideVault(fileId);
-      await deleteDriveItemPermanently(fileId);
+      await assertInsideVault(body.driveId);
+      const newUploader = body.uploaderName.trim();
+      const updated = await updateDriveAppProperties(body.driveId, {
+        uploadedByName: newUploader,
+        uploadedAt: new Date().toISOString(),
+      });
 
       await db.insert(activity).values({
         userId: session.email,
         userName: session.name,
-        action: "delete",
-        driveId: fileId,
-        name: itemName,
-        path: "permanently-deleted",
+        action: "edit_uploader",
+        driveId: body.driveId,
+        name: updated.name,
+        path: updated.parents?.[0] || getVaultRootId(),
+        meta: { newUploaderName: newUploader },
       });
 
-      return json(res, { message: "Item permanently deleted" });
+      return json(res, { success: true, item: updated, uploadedByName: newUploader });
     }
 
     // 13. POST /api/drive/seed-categories
@@ -695,7 +709,15 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       const appProperties: Record<string, string> = {};
       if (body.tags && body.tags.length > 0) appProperties.tags = JSON.stringify(body.tags);
       if (body.notes) appProperties.notes = body.notes;
-      if (session.name) appProperties.uploadedByName = session.name;
+
+      // Read uploader strictly from verified session (never client input)
+      const uploadedById = String(session.id);
+      const uploadedByName = session.name || session.email;
+      const uploadedAt = new Date().toISOString();
+
+      appProperties.uploadedById = uploadedById;
+      appProperties.uploadedByName = uploadedByName;
+      appProperties.uploadedAt = uploadedAt;
       if (session.email) appProperties.uploadedByEmail = session.email;
 
       // Forward client Origin header (or referer origin) to Google Drive
@@ -708,7 +730,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         }
       }
 
-      const { uploadUrl } = await createResumableUploadSession(
+      const { uploadUrl, fileName } = await createResumableUploadSession(
         body.name,
         body.mimeType || "application/octet-stream",
         targetParent,
@@ -716,7 +738,13 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         originHeader
       );
 
-      return json(res, { uploadUrl });
+      return json(res, {
+        uploadUrl,
+        fileName,
+        uploadedByName,
+        uploadedById,
+        uploadedAt,
+      });
     }
 
     // 15. POST /api/drive/upload-complete or complete
@@ -754,6 +782,23 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         return error(res, "Upload verification failed: file could not be verified in Google Drive", 404);
       }
 
+      // Read uploader strictly from verified session (never client input)
+      const uploadedById = String(session.id);
+      const uploadedByName = session.name || session.email;
+      const uploadedAt = new Date().toISOString();
+
+      // Ensure Drive appProperties contains uploader metadata
+      try {
+        await updateDriveAppProperties(verifiedFile.id, {
+          uploadedById,
+          uploadedByName,
+          uploadedAt,
+          ...(session.email ? { uploadedByEmail: session.email } : {}),
+        });
+      } catch (propErr) {
+        console.warn("[Upload Complete] AppProperties update notice:", propErr);
+      }
+
       // Check idempotency: file already recorded in activity?
       const existingActivity = await db
         .select()
@@ -781,7 +826,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         .insert(activity)
         .values({
           userId: session.email,
-          userName: session.name,
+          userName: uploadedByName,
           action: "upload",
           driveId: verifiedFile.id,
           name: verifiedFile.name,
@@ -789,6 +834,9 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
           meta: {
             size: verifiedFile.size || body.size,
             mimeType: verifiedFile.mimeType || body.mimeType,
+            uploadedById,
+            uploadedByName,
+            uploadedAt,
             tags: body.tags || [],
             notes: body.notes || "",
           },
@@ -824,6 +872,9 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         },
         503
       );
+    }
+    if (err.statusCode === 400 || err.status === 400) {
+      return error(res, err.message, 400, { code: err.code || "BAD_REQUEST" });
     }
     if (err.statusCode === 403 || err.status === 403) {
       return error(res, err.message || "Forbidden: Access denied to item outside the family vault", 403);

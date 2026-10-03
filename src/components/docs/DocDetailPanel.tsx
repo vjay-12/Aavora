@@ -22,9 +22,11 @@ import {
   Loader2,
   Copy,
   AlertTriangle,
+  Edit3,
+  Check,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
-import { canUserDelete, DELETE_RESTRICTED_MESSAGE } from "../../config/features";
+import { DELETE_RESTRICTED_MESSAGE } from "../../config/features";
 
 export interface DocItem {
   id: string;
@@ -35,6 +37,7 @@ export interface DocItem {
   createdTime?: string;
   starred?: boolean;
   isFolder?: boolean;
+  uploadedByName?: string;
   appProperties?: Record<string, string>;
   thumbnailLink?: string;
   webViewLink?: string;
@@ -63,8 +66,14 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
   const canDelete = Boolean(isAdmin ?? user?.isAdmin);
   const [restrictedToast, setRestrictedToast] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
-  const [isEncryptingOffline, setIsEncryptingOffline] = useState(false);
+  const [isSavingOffline, setIsSavingOffline] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+
+  // Admin edit uploader state
+  const [isEditingUploader, setIsEditingUploader] = useState(false);
+  const [uploaderInput, setUploaderInput] = useState("");
+  const [isSavingUploader, setIsSavingUploader] = useState(false);
+  const [overrideUploaderName, setOverrideUploaderName] = useState<string | null>(null);
 
   useEffect(() => {
     if (item && !item.isFolder) {
@@ -78,6 +87,8 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
         thumbnailLink: item.thumbnailLink,
       });
     }
+    setOverrideUploaderName(null);
+    setIsEditingUploader(false);
   }, [item]);
 
   if (!item) return null;
@@ -91,7 +102,7 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
       await removeOfflineFile(item.id);
       setIsOffline(false);
     } else {
-      setIsEncryptingOffline(true);
+      setIsSavingOffline(true);
       try {
         const res = await fetch(`/api/drive/download?id=${item.id}`);
         if (!res.ok) throw new Error("Download failed");
@@ -99,9 +110,9 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
         await saveFileOffline(item.id, item.name, item.mimeType, arrayBuf);
         setIsOffline(true);
       } catch (err) {
-        console.error("Failed to save offline:", err);
+        console.error("Failed to save on device:", err);
       } finally {
-        setIsEncryptingOffline(false);
+        setIsSavingOffline(false);
       }
     }
   };
@@ -112,37 +123,79 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
-  const rawUploadedBy =
-    item.appProperties?.uploadedByName || item.appProperties?.uploadedBy || "Vault Admin";
-  const uploadedBy = getUserFullName({
-    name: item.appProperties?.uploadedByName,
-    email: item.appProperties?.uploadedByEmail || item.appProperties?.uploadedBy || rawUploadedBy,
-  });
-  const tags = item.appProperties?.tags ? item.appProperties.tags.split(",") : [];
+  const handleSaveUploader = async () => {
+    if (!uploaderInput.trim()) return;
+    setIsSavingUploader(true);
+    try {
+      const res = await fetch("/api/drive/edit-uploader", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          driveId: item.id,
+          uploaderName: uploaderInput.trim(),
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to update uploader");
+      const data = await res.json();
+      setOverrideUploaderName(data.uploadedByName || uploaderInput.trim());
+      setIsEditingUploader(false);
+    } catch (err) {
+      console.error("Failed to update uploader:", err);
+    } finally {
+      setIsSavingUploader(false);
+    }
+  };
+
+  // Uploader resolution: never default to Vault Admin; fall back to Unknown
+  const resolvedUploader =
+    overrideUploaderName ||
+    item.uploadedByName ||
+    item.appProperties?.uploadedByName ||
+    (item.appProperties?.uploadedBy && item.appProperties.uploadedBy !== "Vault Admin"
+      ? getUserFullName({ email: item.appProperties.uploadedBy })
+      : "Unknown");
+
+  const tags = item.appProperties?.tags
+    ? (typeof item.appProperties.tags === "string" && item.appProperties.tags.startsWith("[")
+        ? JSON.parse(item.appProperties.tags)
+        : item.appProperties.tags.split(","))
+    : [];
   const notes = item.appProperties?.notes || "";
 
   return (
     <div className="fixed inset-y-0 right-0 z-50 w-full sm:w-96 bg-[#090d16] border-l border-white/10 shadow-2xl flex flex-col justify-between overflow-y-auto animate-slideIn">
-      {/* Header */}
+      {/* Header - Contains Star and Close; NO Download button */}
       <div className="p-4 border-b border-white/10 flex items-center justify-between sticky top-0 bg-[#090d16]/95 backdrop-blur-md z-10">
         <div className="flex items-center gap-2">
           <button
+            type="button"
+            data-testid="doc-detail-star-btn"
             onClick={() => onToggleStar(item)}
-            className={`p-2 rounded-xl border transition-colors ${
+            aria-pressed={Boolean(item.starred)}
+            aria-label={item.starred ? "Remove star" : "Star"}
+            title={item.starred ? "Remove star" : "Star"}
+            className={`p-2 rounded-xl border transition-colors flex items-center justify-center min-h-[44px] min-w-[44px] ${
               item.starred
                 ? "bg-amber-500/10 border-amber-500/30 text-amber-400"
                 : "bg-white/5 border-white/10 text-muted-foreground hover:text-white"
             }`}
-            title={item.starred ? "Starred" : "Star"}
           >
-            <Star className={`w-4 h-4 ${item.starred ? "fill-amber-400" : ""}`} />
+            <Star
+              className={`w-4 h-4 transition-transform active:scale-125 ${
+                item.starred
+                  ? "fill-amber-400 stroke-amber-400 text-amber-400"
+                  : "fill-transparent stroke-current"
+              }`}
+            />
           </button>
           <span className="text-xs font-semibold text-white">Document Details</span>
         </div>
         <button
+          type="button"
           data-testid="doc-detail-close"
           onClick={onClose}
-          className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white transition-colors"
+          aria-label="Close details"
+          className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center"
         >
           <X className="w-4 h-4" />
         </button>
@@ -177,7 +230,7 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
           {isOffline && (
             <div className="absolute top-3 right-3 px-2 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-[10px] text-emerald-300 font-medium flex items-center gap-1 backdrop-blur-md">
               <Shield className="w-3 h-3 text-emerald-400" />
-              <span>AES-GCM Offline</span>
+              <span>Saved on this device</span>
             </div>
           )}
         </div>
@@ -207,12 +260,57 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
             </div>
           )}
 
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <span className="text-muted-foreground flex items-center gap-1.5">
               <User className="w-3.5 h-3.5 text-indigo-400" />
               Uploaded By
             </span>
-            <span className="font-medium text-white">{uploadedBy}</span>
+
+            {isEditingUploader ? (
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="text"
+                  value={uploaderInput}
+                  onChange={(e) => setUploaderInput(e.target.value)}
+                  placeholder="Enter name"
+                  className="px-2 py-1 bg-black/50 border border-white/20 rounded text-xs text-white w-28 focus:outline-none focus:border-sky-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveUploader}
+                  disabled={isSavingUploader || !uploaderInput.trim()}
+                  className="p-1 rounded bg-sky-500 hover:bg-sky-400 text-slate-950 disabled:opacity-50"
+                  title="Save uploader"
+                >
+                  <Check className="w-3 h-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsEditingUploader(false)}
+                  className="p-1 rounded bg-white/10 hover:bg-white/20 text-white"
+                  title="Cancel"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span className="font-medium text-white">{resolvedUploader}</span>
+                {canDelete && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUploaderInput(resolvedUploader === "Unknown" ? "" : resolvedUploader);
+                      setIsEditingUploader(true);
+                    }}
+                    className="p-1 rounded-md text-muted-foreground hover:text-sky-400 transition"
+                    title="Edit uploader name"
+                  >
+                    <Edit3 className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -224,12 +322,12 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
               Tags
             </span>
             <div className="flex flex-wrap gap-1.5">
-              {tags.map((t, idx) => (
+              {tags.map((t: string, idx: number) => (
                 <span
                   key={idx}
                   className="px-2.5 py-1 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-300 text-xs font-medium"
                 >
-                  #{t.trim()}
+                  #{String(t).trim()}
                 </span>
               ))}
             </div>
@@ -246,48 +344,49 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
           </div>
         )}
 
-        {/* Offline Vault Action */}
+        {/* Device Offline Vault Action */}
         {!item.isFolder && (
           <div className="p-4 rounded-2xl bg-gradient-to-r from-sky-500/10 to-indigo-500/10 border border-sky-500/20 space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Shield className="w-4 h-4 text-sky-400" />
-                <span className="text-xs font-semibold text-white">Local Offline Vault</span>
+                <span className="text-xs font-semibold text-white">Saved on this device</span>
               </div>
               {isOffline && (
                 <span className="text-[10px] text-emerald-400 font-medium flex items-center gap-1">
-                  <CheckCircle className="w-3 h-3" /> Encrypted & Ready
+                  <CheckCircle className="w-3 h-3" /> Ready offline
                 </span>
               )}
             </div>
             <p className="text-[11px] text-muted-foreground leading-relaxed">
               {isOffline
-                ? "This document is encrypted with Web Crypto AES-GCM and stored locally in this device's IndexedDB."
-                : "Save an encrypted copy on this phone/laptop to read without internet access."}
+                ? "This document is saved safely on this device so you can view it even without an internet connection."
+                : "Save a copy on this phone or laptop to read without internet access."}
             </p>
             <button
+              type="button"
               onClick={handleToggleOffline}
-              disabled={isEncryptingOffline}
-              className={`w-full py-2 px-3 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2 ${
+              disabled={isSavingOffline}
+              className={`w-full py-2.5 px-3 rounded-xl text-xs font-semibold transition-all min-h-[44px] flex items-center justify-center gap-2 ${
                 isOffline
                   ? "bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30"
                   : "bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/30"
               }`}
             >
-              {isEncryptingOffline ? (
+              {isSavingOffline ? (
                 <>
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>Encrypting to Vault...</span>
+                  <span>Saving to device...</span>
                 </>
               ) : isOffline ? (
                 <>
                   <Trash2 className="w-3.5 h-3.5" />
-                  <span>Remove Offline Copy</span>
+                  <span>Remove from this device</span>
                 </>
               ) : (
                 <>
                   <HardDriveDownload className="w-3.5 h-3.5" />
-                  <span>Save Offline (AES-GCM)</span>
+                  <span>Save on this device</span>
                 </>
               )}
             </button>

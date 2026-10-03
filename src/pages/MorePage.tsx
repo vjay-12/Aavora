@@ -18,7 +18,7 @@ import {
   Clock,
   HardDrive,
 } from "lucide-react";
-import { DELETE_RESTRICTED_MESSAGE } from "../config/features";
+import { DELETE_RESTRICTED_MESSAGE, BIN_PAGE_ENABLED } from "../config/features";
 import { UserAvatar } from "../components/common/UserAvatar";
 import { getUserFullName } from "../lib/user-format";
 
@@ -46,16 +46,21 @@ export const MorePage: React.FC = () => {
   const sectionParam = searchParams.get("section");
   const [activeSection, setActiveSection] = useState<"bin" | "members" | "security" | "drive">(() => {
     if (isAdmin && (driveConnectedParam || errorParam || driveErrorParam)) return "drive";
-    if (sectionParam === "bin" && canDelete) return "bin";
+    if (BIN_PAGE_ENABLED && sectionParam === "bin" && canDelete) return "bin";
     if (sectionParam === "security") return "security";
     if (sectionParam === "members" && isAdmin) return "members";
-    return canDelete ? "bin" : "security";
+    if (isAdmin) return "members";
+    return "security";
   });
 
-  // Redirect non-admins attempting to view bin to docs
+  // Redirect if attempting to view bin when disabled or not admin
   React.useEffect(() => {
-    if (sectionParam === "bin" && !canDelete) {
-      navigate(`/docs?msg=${encodeURIComponent(DELETE_RESTRICTED_MESSAGE)}`, { replace: true });
+    if (sectionParam === "bin") {
+      if (!BIN_PAGE_ENABLED) {
+        navigate("/docs", { replace: true });
+      } else if (!canDelete) {
+        navigate(`/docs?msg=${encodeURIComponent(DELETE_RESTRICTED_MESSAGE)}`, { replace: true });
+      }
     }
   }, [sectionParam, canDelete, navigate]);
 
@@ -70,10 +75,7 @@ export const MorePage: React.FC = () => {
     enabled: user?.role === "admin",
   });
 
-  // Admin Permanent Delete Modal State
-  const [deleteConfirmItem, setDeleteConfirmItem] = useState<any | null>(null);
-  const [deleteInputText, setDeleteInputText] = useState("");
-  const [isDeleting, setIsDeleting] = useState(false);
+
 
   // New Member Modal State
   const [showAddMember, setShowAddMember] = useState(false);
@@ -128,35 +130,7 @@ export const MorePage: React.FC = () => {
     }
   };
 
-  // Permanent Delete (Admin only)
-  const handlePermanentDelete = async () => {
-    if (!canDelete || !deleteConfirmItem || deleteInputText !== "DELETE") return;
-    setIsDeleting(true);
-    try {
-      const res = await fetch("/api/drive/permanent-delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fileId: deleteConfirmItem.id,
-          name: deleteConfirmItem.name,
-          confirmationText: deleteInputText,
-        }),
-      });
 
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Failed to delete permanently");
-      }
-
-      setDeleteConfirmItem(null);
-      setDeleteInputText("");
-      refetchBin();
-    } catch (err: any) {
-      alert(err.message);
-    } finally {
-      setIsDeleting(false);
-    }
-  };
 
   // Add Member
   const handleAddMember = async (e: React.FormEvent) => {
@@ -221,7 +195,7 @@ export const MorePage: React.FC = () => {
           Vault Settings & Management
         </h1>
         <p className="text-xs md:text-sm text-muted-foreground mt-0.5">
-          Manage Google Drive Bin, authorized members, per-device security, and sessions.
+          Manage authorized members, device security, and storage.
         </p>
       </div>
 
@@ -243,28 +217,30 @@ export const MorePage: React.FC = () => {
 
       {/* Tabs */}
       <div className="flex bg-white/5 border border-white/10 rounded-2xl p-1 text-xs">
-        <button
-          onClick={() => {
-            if (!canDelete) {
-              setRestrictedToast(DELETE_RESTRICTED_MESSAGE);
-              setTimeout(() => setRestrictedToast(null), 3500);
-              return;
-            }
-            setActiveSection("bin");
-          }}
-          aria-disabled={!canDelete}
-          title={canDelete ? "Drive Bin" : DELETE_RESTRICTED_MESSAGE}
-          className={`flex items-center justify-center gap-2 flex-1 py-2.5 rounded-xl font-medium transition-colors ${
-            !canDelete
-              ? "opacity-50 cursor-not-allowed text-muted-foreground/60 hover:text-muted-foreground"
-              : activeSection === "bin"
-              ? "bg-white/10 text-white shadow-sm"
-              : "text-muted-foreground hover:text-white"
-          }`}
-        >
-          <Trash2 className="w-4 h-4 text-amber-400" />
-          <span>Drive Bin</span>
-        </button>
+        {BIN_PAGE_ENABLED && (
+          <button
+            onClick={() => {
+              if (!canDelete) {
+                setRestrictedToast(DELETE_RESTRICTED_MESSAGE);
+                setTimeout(() => setRestrictedToast(null), 3500);
+                return;
+              }
+              setActiveSection("bin");
+            }}
+            aria-disabled={!canDelete}
+            title={canDelete ? "Drive Bin" : DELETE_RESTRICTED_MESSAGE}
+            className={`flex items-center justify-center gap-2 flex-1 py-2.5 rounded-xl font-medium transition-colors ${
+              !canDelete
+                ? "opacity-50 cursor-not-allowed text-muted-foreground/60 hover:text-muted-foreground"
+                : activeSection === "bin"
+                ? "bg-white/10 text-white shadow-sm"
+                : "text-muted-foreground hover:text-white"
+            }`}
+          >
+            <Trash2 className="w-4 h-4 text-amber-400" />
+            <span>Drive Bin</span>
+          </button>
+        )}
 
         {user?.role === "admin" && (
           <button
@@ -274,7 +250,7 @@ export const MorePage: React.FC = () => {
             }`}
           >
             <Users className="w-4 h-4 text-sky-400" />
-            <span>Members (Neon)</span>
+            <span>Members</span>
           </button>
         )}
 
@@ -302,7 +278,7 @@ export const MorePage: React.FC = () => {
       </div>
 
       {/* SECTION 1: DRIVE BIN */}
-      {activeSection === "bin" && (
+      {BIN_PAGE_ENABLED && activeSection === "bin" && (
         <section className="space-y-4 animate-fadeIn">
           <div className="flex items-center justify-between pb-2 border-b border-white/5">
             <div>
@@ -357,15 +333,6 @@ export const MorePage: React.FC = () => {
                       <RefreshCw className="w-3.5 h-3.5" />
                       <span>Restore</span>
                     </button>
-
-                    {user?.role === "admin" && (
-                      <button
-                        onClick={() => setDeleteConfirmItem(item)}
-                        className="px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 text-xs font-medium"
-                      >
-                        Delete Permanently
-                      </button>
-                    )}
                   </div>
                 </div>
               ))}
@@ -381,7 +348,7 @@ export const MorePage: React.FC = () => {
             <div>
               <h2 className="text-base font-bold text-white">Authorized Vault Members</h2>
               <p className="text-xs text-muted-foreground">
-                Managed in Neon Postgres. Only active members can sign in with Google.
+                Only active family members can sign in with Google.
               </p>
             </div>
             <button
@@ -391,6 +358,13 @@ export const MorePage: React.FC = () => {
               <UserPlus className="w-4 h-4" />
               <span>Add Member</span>
             </button>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-200/90 flex items-center gap-3">
+            <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
+            <p>
+              {"Deleted files can be found in the admin's Google Drive Bin and restored within 30 days."}
+            </p>
           </div>
 
           {isMembersLoading ? (
@@ -451,10 +425,10 @@ export const MorePage: React.FC = () => {
           <div className="p-4 rounded-2xl bg-sky-500/10 border border-sky-500/20 text-xs text-sky-200 space-y-1">
             <div className="flex items-center gap-2 font-semibold text-sky-300">
               <Shield className="w-4 h-4" />
-              <span>Per-Device Security Guarantee</span>
+              <span>Device Security</span>
             </div>
             <p className="text-sky-200/80 leading-relaxed">
-              Your PIN and biometric keys are generated and stored exclusively in this browser&apos;s IndexedDB using PBKDF2 and WebAuthn. They are never transmitted over the network or saved in Neon.
+              Your PIN and biometrics stay securely on this device and are never shared or sent to the cloud.
             </p>
           </div>
 
@@ -572,22 +546,22 @@ export const MorePage: React.FC = () => {
                 <HardDrive className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-xs font-semibold text-white">Wipe Offline Storage</h3>
+                <h3 className="text-xs font-semibold text-white">Saved Device Storage</h3>
                 <p className="text-[11px] text-muted-foreground">
-                  Remove all decrypted/encrypted documents saved on this device
+                  Remove files stored on this device. Your Drive documents remain safe.
                 </p>
               </div>
             </div>
             <button
               onClick={async () => {
-                if (confirm("Wipe all offline copies from this device?")) {
+                if (confirm("Remove all saved files from this device?")) {
                   await wipeOfflineStorage();
-                  alert("Local offline vault wiped.");
+                  alert("Saved files removed from this device.");
                 }
               }}
               className="px-3 py-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 text-xs font-medium"
             >
-              Wipe Device Vault
+              Clear Device Storage
             </button>
           </div>
 
@@ -598,7 +572,7 @@ export const MorePage: React.FC = () => {
               className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl bg-white/5 hover:bg-rose-500/15 border border-white/10 hover:border-rose-500/20 text-rose-300 text-xs font-semibold transition-colors"
             >
               <LogOut className="w-4 h-4" />
-              <span>Log Out of Aavora & Clear Session</span>
+              <span>Log Out</span>
             </button>
           </div>
         </section>
@@ -612,7 +586,7 @@ export const MorePage: React.FC = () => {
               <Shield className="w-5 h-5 text-emerald-400 flex-shrink-0" />
               <div>
                 <p className="font-semibold">Google Drive Connected Successfully!</p>
-                <p className="text-[11px] text-emerald-200/80">Admin refresh token is encrypted and stored in the database settings.</p>
+                <p className="text-[11px] text-emerald-200/80">Google Drive is connected and ready.</p>
               </div>
             </div>
           )}
@@ -625,7 +599,7 @@ export const MorePage: React.FC = () => {
                   {errorParam === "wrong_account"
                     ? "Wrong Google Account"
                     : errorParam === "missing_refresh_token"
-                    ? "Refresh Token Missing"
+                    ? "Connection Needed"
                     : errorParam === "invalid_state"
                     ? "Session Expired"
                     : `Connection Error: ${errorParam}`}
@@ -700,53 +674,11 @@ export const MorePage: React.FC = () => {
                 <span>{driveHealth?.adminDriveConnected ? "Reconnect Google Drive" : "Connect Google Drive"}</span>
               </a>
               <p className="text-[11px] text-muted-foreground">
-                Opens Google OAuth with <code>drive</code> scope. Only allowed for admin account.
+                Connects your family Google Drive. Only the admin can do this.
               </p>
             </div>
           </div>
         </section>
-      )}
-
-      {/* Admin Permanent Delete Confirmation Modal */}
-      {deleteConfirmItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="relative w-full max-w-md bg-[#0d1322] border border-rose-500/30 rounded-2xl p-6 shadow-2xl space-y-4">
-            <div className="flex items-center gap-3 text-rose-400">
-              <AlertTriangle className="w-6 h-6 flex-shrink-0" />
-              <h3 className="text-base font-bold text-white">Permanent Deletion</h3>
-            </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              You are about to permanently delete <strong>{deleteConfirmItem.name}</strong> from Google Drive. This cannot be undone.
-            </p>
-            <div>
-              <label className="block text-xs font-medium text-muted-foreground mb-1">
-                Type <strong>DELETE</strong> to confirm:
-              </label>
-              <input
-                type="text"
-                value={deleteInputText}
-                onChange={(e) => setDeleteInputText(e.target.value)}
-                placeholder="DELETE"
-                className="w-full px-3 py-2 bg-black/40 border border-white/10 rounded-xl text-xs text-white"
-              />
-            </div>
-            <div className="flex gap-2 justify-end pt-2">
-              <button
-                onClick={() => setDeleteConfirmItem(null)}
-                className="px-4 py-2 text-xs rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handlePermanentDelete}
-                disabled={deleteInputText !== "DELETE" || isDeleting}
-                className="px-4 py-2 rounded-xl bg-rose-500 text-white font-semibold text-xs disabled:opacity-40"
-              >
-                {isDeleting ? "Deleting..." : "Permanently Delete"}
-              </button>
-            </div>
-          </div>
-        </div>
       )}
 
       {/* Admin Add Member Modal */}

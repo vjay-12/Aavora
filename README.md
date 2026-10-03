@@ -181,6 +181,35 @@ For production on Vercel:
 - **Zero-Knowledge Bundle:** Build output (`dist/`) is strictly audited against secret leaks. No environment variables or credentials appear in client assets.
 - **Serverless Session Security:** Session tokens are encrypted JWEs (`A256GCM`) signed and decrypted exclusively server-side using `jose`.
 - **Silent Refresh:** When an access token expires (1 hour), `getAdminAccessToken()` automatically uses the stored admin refresh token to fetch a new token and cache it in memory.
-- **Hierarchical Drive Isolation:** Every request to `/api/drive/*` traverses the folder tree up to `GOOGLE_DRIVE_ROOT_FOLDER_ID`. Any attempt to access a folder outside the designated family vault is rejected with HTTP 403.
-- **Device Security:** Per-device PIN (PBKDF2) and WebAuthn biometric unlock (fingerprint, Face ID, Windows Hello) with auto-lock timer stored only in browser IndexedDB.
-- **Offline Document Encryption:** Local documents encrypted with AES-256-GCM via Web Crypto API.
+- **Offline Document Encryption:** Local documents encrypted with standard Web Crypto API.
+
+---
+
+## 8. Data Safety & Zero-Delete Policy
+
+Aavora enforces a strict Zero-Delete safety architecture to protect family documents against accidental or automated data loss:
+
+1. **Zero Automatic Deletions:**
+   - The application codebase is audited by automated regression tests to guarantee it never invokes `files.delete` or `emptyTrash`.
+   - No cron jobs, sync routines, upload error handlers, or duplicate-cleaners are permitted to delete or trash items automatically.
+   - The permanent-delete endpoint and UI have been removed.
+
+2. **Admin-Only Manual Move to Bin (30-Day Recovery):**
+   - The only removal permitted is an explicit manual action by the verified admin (`ADMIN_EMAIL`), moving an item to the Google Drive Bin where it remains recoverable for 30 days.
+   - Non-admin family members cannot move items to the Bin (enforced server-side with HTTP 403 `DELETE_RESTRICTED`).
+   - Every move to Bin is logged to the `activity` table with the user ID, user name, timestamp, and Drive file ID.
+
+3. **Safe Folder Deletion:**
+   - Deleting a folder is restricted exclusively to the admin.
+   - Deletion requires explicitly typing the exact folder name to confirm intent.
+   - Deletion is blocked server-side with HTTP 400 `FOLDER_NOT_EMPTY` if the folder contains any files or subfolders.
+
+4. **Never Overwrite (Automatic Numbering):**
+   - Uploading or renaming a file or folder with an existing name automatically appends ` (1)`, ` (2)`, etc., preventing any existing file from being overwritten or replaced.
+
+5. **Strict Vault Boundary & Root Isolation:**
+   - Every Drive read and write traverses the folder hierarchy to verify ancestry within `GOOGLE_DRIVE_ROOT_FOLDER_ID`.
+   - Modifying or trashing the root folder itself is strictly blocked.
+
+6. **Device-Local Storage Isolation:**
+   - Local "remove offline copy" and logout actions clear only the cached copy in device storage, never modifying or touching Google Drive.

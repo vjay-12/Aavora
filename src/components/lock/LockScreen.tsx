@@ -169,7 +169,7 @@ export const LockScreen: React.FC = () => {
         ) : (
           <div className="bg-white/5 border border-white/10 p-3.5 rounded-xl text-left text-xs max-w-xs space-y-2">
             <p className="text-foreground">
-              Resetting your PIN wipes local encrypted offline copies on this device, but your Drive files remain 100% safe. You will re-verify with Google Sign-in.
+              Resetting your PIN removes files saved on this device, but your family documents stay completely safe. You can sign back in with Google.
             </p>
             <div className="flex gap-2 justify-end pt-1">
               <button

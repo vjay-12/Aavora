@@ -577,6 +577,55 @@ export async function getDriveFile(fileId: string): Promise<DriveItem> {
 /**
  * Creates a folder inside a parent folder in the vault.
  */
+/**
+ * Splits filename into base name and extension.
+ */
+export function splitFileName(fileName: string): { base: string; ext: string } {
+  const lastDot = fileName.lastIndexOf(".");
+  let rawBase = fileName;
+  let ext = "";
+  if (lastDot > 0 && lastDot < fileName.length - 1) {
+    rawBase = fileName.slice(0, lastDot);
+    ext = fileName.slice(lastDot);
+  }
+  // Strip duplicate numbering suffix if present, e.g. "Invoice (1)" -> "Invoice"
+  const base = rawBase.replace(/\s\(\d+\)$/, "");
+  return { base, ext };
+}
+
+/**
+ * Ensures a unique file name in a parent folder by appending " (1)", " (2)", etc. if a file/folder with the name exists.
+ */
+export async function getUniqueDriveItemName(desiredName: string, parentId: string): Promise<string> {
+  const accessToken = await getAdminAccessToken();
+  const { base, ext } = splitFileName(desiredName);
+
+  const safeBase = base.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  const q = `'${parentId}' in parents and trashed = false and name contains '${safeBase}'`;
+  const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(name)&supportsAllDrives=true&pageSize=100`;
+
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) return desiredName;
+    const data = await res.json().catch(() => ({ files: [] }));
+    const existingNames = new Set<string>((data.files || []).map((f: any) => String(f.name)));
+
+    if (!existingNames.has(desiredName)) {
+      return desiredName;
+    }
+
+    let counter = 1;
+    while (existingNames.has(`${base} (${counter})${ext}`)) {
+      counter++;
+    }
+    return `${base} (${counter})${ext}`;
+  } catch {
+    return desiredName;
+  }
+}
+
 export async function createDriveFolder(
   name: string,
   parentId?: string,
@@ -588,9 +637,10 @@ export async function createDriveFolder(
   // Boundary check: must be inside root
   await assertInsideVault(targetParent);
 
+  const safeName = await getUniqueDriveItemName(name.trim(), targetParent);
   const accessToken = await getAdminAccessToken();
   const body: Record<string, unknown> = {
-    name,
+    name: safeName,
     mimeType: "application/vnd.google-apps.folder",
     parents: [targetParent],
   };
@@ -618,10 +668,21 @@ export async function createDriveFolder(
 }
 
 /**
- * Renames a Drive file or folder in the vault.
+ * Renames a Drive file or folder in the vault, appending (1) if name already exists.
  */
 export async function renameDriveItem(itemId: string, newName: string): Promise<DriveItem> {
+  const rootId = getVaultRootId();
+  if (itemId === rootId) {
+    const err: any = new Error("Cannot rename the vault root folder.");
+    err.statusCode = 403;
+    throw err;
+  }
   await assertInsideVault(itemId);
+
+  const file = await getDriveFile(itemId);
+  const parentId = file.parents?.[0] || rootId;
+  const safeName = await getUniqueDriveItemName(newName.trim(), parentId);
+
   const accessToken = await getAdminAccessToken();
 
   const res = await fetch(
@@ -632,7 +693,7 @@ export async function renameDriveItem(itemId: string, newName: string): Promise<
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ name: newName }),
+      body: JSON.stringify({ name: safeName }),
     }
   );
 
@@ -649,6 +710,12 @@ export async function moveDriveItem(
   newParentId: string,
   currentParentId?: string
 ): Promise<DriveItem> {
+  const rootId = getVaultRootId();
+  if (itemId === rootId) {
+    const err: any = new Error("Cannot move the vault root folder.");
+    err.statusCode = 403;
+    throw err;
+  }
   await assertInsideVault(itemId);
   await assertInsideVault(newParentId);
 
@@ -676,14 +743,32 @@ export async function moveDriveItem(
 }
 
 /**
- * Moves an item to Drive Trash (soft-delete).
+ * Moves an item to Drive Trash (soft-delete, recoverable for 30 days).
+ * Blocks trashing if the item is a folder and not empty.
+ * Never allows trashing the vault root folder.
  */
 export async function setDriveTrashed(itemId: string, trashed: boolean): Promise<DriveItem> {
-  if (!trashed) {
-    // Restoring: verify it belongs to vault before restoring
-    await assertInsideVault(itemId);
-  } else {
-    await assertInsideVault(itemId);
+  const rootId = getVaultRootId();
+  if (itemId === rootId) {
+    const err: any = new Error("Cannot delete or trash the root vault folder.");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  await assertInsideVault(itemId);
+
+  // If moving to trash, verify folder is empty
+  if (trashed) {
+    const itemMeta = await getDriveFile(itemId);
+    if (itemMeta.mimeType === "application/vnd.google-apps.folder") {
+      const { files } = await listDriveItems(itemId, 1);
+      if (files && files.length > 0) {
+        const err: any = new Error(`Folder "${itemMeta.name}" is not empty. Please remove or move its contents first.`);
+        err.statusCode = 400;
+        err.code = "FOLDER_NOT_EMPTY";
+        throw err;
+      }
+    }
   }
 
   const accessToken = await getAdminAccessToken();
@@ -702,27 +787,6 @@ export async function setDriveTrashed(itemId: string, trashed: boolean): Promise
   const data = await res.json();
   if (!res.ok) throw new Error(data.error?.message || `Failed to ${trashed ? "trash" : "restore"} item`);
   return data;
-}
-
-/**
- * Permanently deletes an item from Google Drive (admin-only).
- */
-export async function deleteDriveItemPermanently(itemId: string): Promise<void> {
-  const accessToken = await getAdminAccessToken();
-  const res = await fetch(
-    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(itemId)}?supportsAllDrives=true`,
-    {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${accessToken}` },
-    }
-  );
-
-  if (!res.ok && res.status !== 204 && res.status !== 404) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error?.message || "Failed to permanently delete item");
-  }
-
-  verifiedFolderIds.delete(itemId);
 }
 
 /**
@@ -772,16 +836,17 @@ export async function createResumableUploadSession(
   parentId?: string,
   appProperties?: Record<string, string>,
   origin?: string
-): Promise<{ uploadUrl: string }> {
+): Promise<{ uploadUrl: string; fileName: string }> {
   const rootId = getVaultRootId();
   const targetParent = parentId || rootId;
 
   // Boundary check
   await assertInsideVault(targetParent);
 
+  const safeName = await getUniqueDriveItemName(name, targetParent);
   const accessToken = await getAdminAccessToken();
   const metadata: Record<string, unknown> = {
-    name,
+    name: safeName,
     mimeType,
     parents: [targetParent],
   };
@@ -822,7 +887,7 @@ export async function createResumableUploadSession(
     throw new Error("Missing Location header from Google Drive resumable upload endpoint");
   }
 
-  return { uploadUrl };
+  return { uploadUrl, fileName: safeName };
 }
 
 /**

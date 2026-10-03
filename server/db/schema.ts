@@ -29,6 +29,7 @@ export const activity = pgTable(
         "restore",
         "delete",
         "create_folder",
+        "edit_uploader",
       ],
     }).notNull(),
     driveId: text("drive_id").notNull(),

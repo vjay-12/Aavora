@@ -49,7 +49,7 @@ export const HomePage: React.FC = () => {
     }
   }, [driveConnected, queryClient, searchParams, setSearchParams]);
 
-  // Load recently viewed from IndexedDB (local to device)
+  // Load recently viewed files (saved locally on this device)
   useEffect(() => {
     getRecentlyViewed(8).then(setRecentItems);
   }, []);
@@ -158,7 +158,7 @@ export const HomePage: React.FC = () => {
             </div>
             <div>
               <p className="font-bold text-sm text-white">Google Drive Connected Successfully!</p>
-              <p className="text-[11px] text-emerald-200/90">Vault synchronization is active. All documents are now accessible.</p>
+              <p className="text-[11px] text-emerald-200/90">Your documents are ready. Everything is up to date.</p>
             </div>
           </div>
           <button
@@ -189,7 +189,7 @@ export const HomePage: React.FC = () => {
               </h3>
               <p className="text-xs text-amber-200/80">
                 {user?.role === "admin"
-                  ? "Admin Google Drive is not connected or token is revoked. Reconnect to restore access."
+                  ? "Google Drive is not connected. Reconnect to access your family documents."
                   : "Vault is temporarily unavailable, contact the admin."}
               </p>
             </div>
@@ -210,7 +210,7 @@ export const HomePage: React.FC = () => {
         <div>
           <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-sky-500/10 border border-sky-500/20 text-sky-400 text-xs font-medium mb-2">
             <ShieldCheck className="w-3.5 h-3.5" />
-            <span>Vault Encrypted & Synced</span>
+            <span>Your documents are safe</span>
           </div>
           <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight text-white font-['Outfit']">
             {getGreeting(user)}
@@ -243,8 +243,8 @@ export const HomePage: React.FC = () => {
                 <HardDrive className="w-4 h-4" />
               </div>
               <div>
-                <h3 className="text-sm font-semibold text-white">Vault storage (admin Drive)</h3>
-                <p className="text-[11px] text-muted-foreground">Admin Shared Storage</p>
+                <h3 className="text-sm font-semibold text-white">Storage used</h3>
+                <p className="text-[11px] text-muted-foreground">Shared family storage</p>
               </div>
             </div>
             <span className="text-xs font-mono font-medium px-2 py-0.5 rounded-md bg-white/10 text-white">
@@ -380,7 +380,7 @@ export const HomePage: React.FC = () => {
         )}
       </section>
 
-      {/* Recently Viewed Files (Device-Local from IndexedDB) */}
+      {/* Recently Viewed Files (Device-Local) */}
       <section className="space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -388,7 +388,7 @@ export const HomePage: React.FC = () => {
             <h2 className="text-lg font-bold text-white font-['Outfit']">Recently Viewed</h2>
           </div>
           {recentItems.length > 0 && (
-            <span className="text-xs text-muted-foreground">Cached on this device</span>
+            <span className="text-xs text-muted-foreground">Saved on this device</span>
           )}
         </div>
 
