@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { Upload, X, File, AlertCircle, Loader2, Folder, CheckCircle2 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { formatBytes } from "../../lib/utils";
@@ -6,13 +6,17 @@ import { formatBytes } from "../../lib/utils";
 interface UploadModalProps {
   isOpen: boolean;
   parentId?: string;
+  parentName?: string;
+  fromHome?: boolean;
   onClose: () => void;
-  onUploadSuccess: (fileName?: string) => void;
+  onUploadSuccess: (fileName?: string, targetFolderId?: string) => void;
 }
 
 export const UploadModal: React.FC<UploadModalProps> = ({
   isOpen,
   parentId,
+  parentName,
+  fromHome,
   onClose,
   onUploadSuccess,
 }) => {
@@ -27,21 +31,44 @@ export const UploadModal: React.FC<UploadModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { data: driveData } = useQuery({
-    queryKey: ["drive-folders-select"],
+  // Fetch all vault folders for nested folder selector
+  const { data: foldersData } = useQuery({
+    queryKey: ["vault-all-folders"],
     queryFn: async () => {
-      const res = await fetch("/api/drive/list");
-      if (!res.ok) return { items: [] };
+      const res = await fetch("/api/drive/folders");
+      if (!res.ok) return { folders: [] };
       return res.json();
     },
     enabled: isOpen,
+    staleTime: 30000,
   });
 
-  const availableFolders = (driveData?.items || []).filter(
-    (item: any) => item.isFolder || item.mimeType === "application/vnd.google-apps.folder"
-  );
+  const availableFolders: Array<{ id: string; name: string; path: string; color?: string }> =
+    foldersData?.folders || [];
+
+  // Synchronize destinationFolderId when modal opens or parentId changes
+  useEffect(() => {
+    if (isOpen) {
+      setDestinationFolderId(parentId || "");
+      setSelectedFile(null);
+      setTagInput("");
+      setTags([]);
+      setNotes("");
+      setIsUploading(false);
+      setIsComplete(false);
+      setProgress(0);
+      setErrorMsg(null);
+    }
+  }, [isOpen, parentId]);
 
   if (!isOpen) return null;
+
+  // Resolve display name for destination folder
+  const selectedFolderObj = availableFolders.find((f) => f.id === destinationFolderId);
+  const currentFolderDisplayName =
+    selectedFolderObj?.path ||
+    selectedFolderObj?.name ||
+    (destinationFolderId === parentId && parentName ? parentName : "Vault Root");
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -72,7 +99,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
     const targetParent = destinationFolderId || parentId;
 
     try {
-      // 1. Request upload session from server
+      // 1. Request upload session from server with target folder ID
       const sessionRes = await fetch("/api/upload/session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -136,7 +163,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         console.warn("[Upload] PUT notice, verifying with server:", uploadErr);
       }
 
-      // If direct PUT failed or was blocked by CORS, try querying session status from client
+      // If direct PUT returned no body, verify upload session status
       if (!driveId) {
         try {
           const statusRes = await fetch(uploadUrl, {
@@ -156,7 +183,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         }
       }
 
-      // 3. Notify server of completion
+      // 3. Notify server of completion with exact destination folder ID
       const completeRes = await fetch("/api/upload/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -185,7 +212,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
       setProgress(100);
       setIsComplete(true);
       setTimeout(() => {
-        onUploadSuccess(fileName || selectedFile.name);
+        onUploadSuccess(fileName || selectedFile.name, targetParent);
         onClose();
       }, 700);
     } catch (err: any) {
@@ -223,7 +250,28 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           </button>
         </div>
 
-        {/* Drop / Select zone */}
+        {/* Destination folder indicator */}
+        <div className="mb-4 flex items-center justify-between px-3.5 py-2.5 rounded-2xl bg-sky-500/10 border border-sky-500/20 text-xs">
+          <div className="flex items-center gap-2 overflow-hidden">
+            <Folder className="w-4 h-4 text-sky-400 flex-shrink-0" />
+            <span className="text-muted-foreground">Uploading to:</span>
+            <span className="font-semibold text-white truncate max-w-[240px]">
+              {currentFolderDisplayName}
+            </span>
+          </div>
+          <span className="text-[10px] text-sky-400 font-medium px-2 py-0.5 rounded-full bg-sky-500/20">
+            Vault Folder
+          </span>
+        </div>
+
+        {fromHome && (
+          <div className="mb-4 p-3 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-200 text-xs flex items-center gap-2">
+            <Folder className="w-4 h-4 text-indigo-400 flex-shrink-0" />
+            <span>Please choose the folder where you want this file saved:</span>
+          </div>
+        )}
+
+        {/* Hidden native file input */}
         <input
           ref={fileInputRef}
           type="file"
@@ -232,10 +280,11 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           disabled={isUploading || isComplete}
         />
 
+        {/* Drop zone or file info */}
         {!selectedFile ? (
           <div
             onClick={() => fileInputRef.current?.click()}
-            className="border-2 border-dashed border-white/15 hover:border-sky-500/50 rounded-2xl p-8 text-center cursor-pointer bg-white/[0.02] hover:bg-white/5 transition-all group"
+            className="border-2 border-dashed border-white/15 hover:border-sky-500/50 rounded-2xl p-8 text-center cursor-pointer transition-colors bg-white/5 hover:bg-white/[0.07] group min-h-[120px] flex flex-col items-center justify-center"
           >
             <Upload className="w-8 h-8 text-muted-foreground group-hover:text-sky-400 mx-auto mb-3 transition-colors" />
             <p className="text-sm font-semibold text-white">Click or drop a file here</p>
@@ -259,7 +308,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             {!isUploading && (
               <button
                 onClick={() => setSelectedFile(null)}
-                className="text-xs text-rose-400 hover:text-rose-300 ml-2"
+                className="text-xs text-rose-400 hover:text-rose-300 ml-2 min-h-[44px] px-2 flex items-center"
               >
                 Change
               </button>
@@ -270,7 +319,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         {/* Choose Destination Folder */}
         <div className="mt-4 space-y-1">
           <label className="block text-xs font-medium text-muted-foreground">
-            Folder
+            Destination Folder
           </label>
           <div className="relative">
             <select
@@ -279,12 +328,15 @@ export const UploadModal: React.FC<UploadModalProps> = ({
               disabled={isUploading || isComplete}
               className="w-full px-3 py-2 bg-black/40 border border-white/10 rounded-xl text-xs text-white focus:outline-none focus:border-sky-500 appearance-none min-h-[44px]"
             >
-              <option value={parentId || ""}>Current Folder</option>
-              {availableFolders.map((f: any) => (
-                <option key={f.id} value={f.id}>
-                  {f.name}
-                </option>
-              ))}
+              {availableFolders.length === 0 ? (
+                <option value={parentId || ""}>{parentName || "Vault Root"}</option>
+              ) : (
+                availableFolders.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.path || f.name}
+                  </option>
+                ))
+              )}
             </select>
             <Folder className="w-4 h-4 text-sky-400 absolute right-3 top-3.5 pointer-events-none" />
           </div>
@@ -343,51 +395,52 @@ export const UploadModal: React.FC<UploadModalProps> = ({
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            placeholder="Add a short note or description..."
+            placeholder="Add any helpful context or details..."
             rows={2}
             disabled={isUploading || isComplete}
-            className="w-full px-3 py-2 bg-black/40 border border-white/10 rounded-xl text-xs text-white focus:outline-none focus:border-sky-500"
+            className="w-full px-3 py-2 bg-black/40 border border-white/10 rounded-xl text-xs text-white focus:outline-none focus:border-sky-500 resize-none min-h-[44px]"
           />
         </div>
 
-        {/* Upload Progress Bar / Done Message */}
+        {/* Progress Bar */}
         {isUploading && (
-          <div className="mt-4 space-y-2">
-            <div className="flex justify-between text-xs">
-              <span className="text-sky-400 font-medium">Uploading file...</span>
-              <span className="font-mono text-white">{progress}%</span>
+          <div className="mt-4 space-y-1.5 animate-fadeIn">
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>Uploading document...</span>
+              <span>{progress}%</span>
             </div>
             <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
               <div
-                className="bg-gradient-to-r from-sky-400 to-indigo-500 h-full rounded-full transition-all duration-150"
+                className="bg-sky-500 h-full rounded-full transition-all duration-200"
                 style={{ width: `${progress}%` }}
               />
             </div>
           </div>
         )}
 
+        {/* Completed feedback */}
         {isComplete && (
           <div className="mt-4 p-3 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs flex items-center gap-2 animate-fadeIn">
             <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-            <span className="font-semibold">Done! File uploaded successfully.</span>
+            <span>Upload complete! Saved to vault.</span>
           </div>
         )}
 
-        {/* Error alert */}
+        {/* Error message */}
         {errorMsg && (
-          <div className="mt-4 p-3 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+          <div className="mt-4 p-3 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2 animate-fadeIn">
+            <AlertCircle className="w-4 h-4 text-rose-400 flex-shrink-0" />
             <span>{errorMsg}</span>
           </div>
         )}
 
-        {/* Action Buttons */}
-        <div className="flex gap-2 justify-end mt-6">
+        {/* Action buttons */}
+        <div className="mt-6 flex justify-end gap-3">
           <button
             type="button"
             onClick={onClose}
             disabled={isUploading}
-            className="px-4 py-2.5 text-xs rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white min-h-[44px] transition"
+            className="px-4 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-xs font-medium text-muted-foreground hover:text-white transition disabled:opacity-50 min-h-[44px]"
           >
             Cancel
           </button>
@@ -395,23 +448,15 @@ export const UploadModal: React.FC<UploadModalProps> = ({
             type="button"
             onClick={handleUpload}
             disabled={!selectedFile || isUploading || isComplete}
-            className="flex items-center gap-2 px-5 py-2.5 text-xs font-semibold rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white shadow-lg shadow-sky-500/25 transition-all disabled:opacity-50 min-h-[44px]"
+            className="px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-xs font-semibold text-black transition shadow-lg shadow-sky-500/20 disabled:opacity-50 flex items-center gap-2 min-h-[44px]"
           >
-            {isComplete ? (
+            {isUploading ? (
               <>
-                <CheckCircle2 className="w-4 h-4" />
-                <span>Uploaded</span>
-              </>
-            ) : isUploading ? (
-              <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span>Uploading ({progress}%)</span>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Uploading...</span>
               </>
             ) : (
-              <>
-                <Upload className="w-3.5 h-3.5" />
-                <span>Upload</span>
-              </>
+              <span>Upload file</span>
             )}
           </button>
         </div>

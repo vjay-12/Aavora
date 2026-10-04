@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "fs";
 import path from "path";
 import driveHandler from "../../api/drive/[action].js";
@@ -8,6 +8,8 @@ import { createSessionToken } from "../../server/auth.js";
 import { db } from "../../server/db/index.js";
 import { users } from "../../server/db/schema.js";
 import { eq } from "drizzle-orm";
+import { DEFAULT_FOLDER_COLOR, getFolderPalette } from "../../src/config/colors.js";
+import { getEnv } from "../../server/env.js";
 
 function createFakeReq(options: {
   method?: string;
@@ -77,24 +79,33 @@ function createFakeRes() {
 }
 
 describe("Aavora 8-Point Safe Vault & UI/UX Standards", () => {
-  // 1. DOCUMENT MENU (⋯ on a file)
-  describe("1. Document Menu (⋯ on a file)", () => {
-    it("DocsPage source excludes 'Preview' and 'Download' from the 3-dot dropdown menu", () => {
+  // 1. DOCUMENT MENU (⋯ on a file) & VIEW DETAILS CLEANUP
+  describe("1. Document Menu (⋯ on a file) & View Details Cleanup", () => {
+    it("DocsPage source includes full actions in 3-dot menu and DocDetailPanel excludes duplicate actions", () => {
       const docsPagePath = path.resolve(import.meta.dirname, "../../src/pages/DocsPage.tsx");
       const content = fs.readFileSync(docsPagePath, "utf-8");
 
-      // Verify dropdown menus do not contain 'Preview' or 'Download' as menu buttons
+      // Verify dropdown menus contain all standard actions
       const dropdownMatches = content.match(/data-testid=\{`card-menu-dropdown-\$\{file\.id\}`\}[\s\S]*?<\/div>/g) || [];
       expect(dropdownMatches.length).toBeGreaterThan(0);
 
       for (const dropdown of dropdownMatches) {
-        expect(dropdown).not.toContain("Preview File");
-        expect(dropdown).not.toContain("<span>Download</span>");
         expect(dropdown).toContain("View details");
+        expect(dropdown).toContain("Download");
+        expect(dropdown).toContain("Save on this device");
         expect(dropdown).toContain("Rename");
         expect(dropdown).toContain("Move");
         expect(dropdown).toContain("Move to Bin");
       }
+
+      // Verify DocDetailPanel does NOT contain duplicate actions: Download, Save on this device, Copy, Delete
+      const detailPath = path.resolve(import.meta.dirname, "../../src/components/docs/DocDetailPanel.tsx");
+      const detailContent = fs.readFileSync(detailPath, "utf-8");
+      expect(detailContent).not.toContain("Save on this device");
+      expect(detailContent).not.toContain("handleDownload");
+      expect(detailContent).not.toContain("handleCopy");
+      expect(detailContent).not.toContain("handleTrash");
+      expect(detailContent).not.toContain("Move to Bin");
     });
   });
 
@@ -326,7 +337,7 @@ describe("Aavora 8-Point Safe Vault & UI/UX Standards", () => {
       const uploadModalContent = fs.readFileSync(path.resolve(import.meta.dirname, "../../src/components/docs/UploadModal.tsx"), "utf-8");
       expect(uploadModalContent).toContain("destinationFolderId");
       expect(uploadModalContent).toContain("Choose Destination Folder");
-      expect(uploadModalContent).toContain("Done! File uploaded successfully.");
+      expect(uploadModalContent).toContain("Upload complete! Saved to vault.");
     });
   });
 
@@ -400,6 +411,281 @@ describe("Aavora 8-Point Safe Vault & UI/UX Standards", () => {
       const moreContent = fs.readFileSync(path.resolve(import.meta.dirname, "../../src/pages/MorePage.tsx"), "utf-8");
       expect(moreContent).toContain("{BIN_PAGE_ENABLED && (");
       expect(moreContent).toContain("Deleted files can be found in the admin's Google Drive Bin and restored within 30 days.");
+    });
+  });
+
+  // 9. SUBFOLDER UPLOAD (1 Level Deep and 2 Levels Deep)
+  describe("9. Subfolder Upload (1 Level Deep and 2 Levels Deep)", () => {
+    const originalFetch = global.fetch;
+    const originalToken = process.env.GOOGLE_ADMIN_REFRESH_TOKEN;
+
+    beforeEach(() => {
+      process.env.GOOGLE_ADMIN_REFRESH_TOKEN = "mock_admin_refresh_token_subfolder";
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+      if (originalToken !== undefined) {
+        process.env.GOOGLE_ADMIN_REFRESH_TOKEN = originalToken;
+      } else {
+        delete process.env.GOOGLE_ADMIN_REFRESH_TOKEN;
+      }
+    });
+
+    it("uploading inside a subfolder 1 level deep sets parents to that subfolder, not root", async () => {
+      const rootId = getVaultRootId();
+      const subfolder1Id = "subfolder_level_1_id";
+      let capturedMetadata: any = null;
+
+      const env = getEnv();
+      const adminToken = await createSessionToken({
+        id: 1,
+        email: env.ADMIN_EMAIL,
+        name: "Test Admin",
+        role: "admin",
+      });
+
+      global.fetch = async (input: any, init?: any) => {
+        const urlStr = typeof input === "string" ? input : input.url;
+
+        if (urlStr.includes("oauth2.googleapis.com/token")) {
+          return new Response(JSON.stringify({ access_token: "mock_token" }), { status: 200 });
+        }
+
+        // Subfolder 1 parent check -> parent is rootId
+        if (urlStr.includes(`files/${subfolder1Id}?`)) {
+          return new Response(
+            JSON.stringify({ id: subfolder1Id, parents: [rootId], trashed: false }),
+            { status: 200 }
+          );
+        }
+
+        if (urlStr.includes("upload/drive/v3/files?uploadType=resumable")) {
+          if (init?.body) {
+            capturedMetadata = JSON.parse(init.body);
+          }
+          return new Response(JSON.stringify({ id: "uploaded_doc_sub1" }), {
+            status: 200,
+            headers: { Location: "https://www.googleapis.com/upload/drive/v3/files?upload_id=mock_session_sub1" },
+          });
+        }
+
+        return originalFetch(input, init);
+      };
+
+      const req = createFakeReq({
+        method: "POST",
+        url: "/api/drive/upload-session",
+        token: adminToken,
+        body: {
+          name: "Sub1_File.pdf",
+          mimeType: "application/pdf",
+          parentId: subfolder1Id,
+        },
+      });
+      const { res, getCode, getBody } = createFakeRes();
+
+      await driveHandler(req, res);
+
+      expect(getCode()).toBe(200);
+      const body = getBody();
+      expect(body.parentId).toBe(subfolder1Id);
+      expect(capturedMetadata).not.toBeNull();
+      // Verifies the file is placed directly in the subfolder, never root
+      expect(capturedMetadata.parents).toEqual([subfolder1Id]);
+      expect(capturedMetadata.parents).not.toEqual([rootId]);
+    });
+
+    it("uploading inside a subfolder 2 levels deep walks parent chain and sets parents to subfolder 2", async () => {
+      const rootId = getVaultRootId();
+      const subfolder1Id = "subfolder_level_1_id";
+      const subfolder2Id = "subfolder_level_2_id";
+      let capturedMetadata: any = null;
+
+      const env = getEnv();
+      const adminToken = await createSessionToken({
+        id: 1,
+        email: env.ADMIN_EMAIL,
+        name: "Test Admin",
+        role: "admin",
+      });
+
+      global.fetch = async (input: any, init?: any) => {
+        const urlStr = typeof input === "string" ? input : input.url;
+
+        if (urlStr.includes("oauth2.googleapis.com/token")) {
+          return new Response(JSON.stringify({ access_token: "mock_token" }), { status: 200 });
+        }
+
+        // Subfolder 2 -> parent is Subfolder 1
+        if (urlStr.includes(`files/${subfolder2Id}?`)) {
+          return new Response(
+            JSON.stringify({ id: subfolder2Id, parents: [subfolder1Id], trashed: false }),
+            { status: 200 }
+          );
+        }
+
+        // Subfolder 1 -> parent is rootId
+        if (urlStr.includes(`files/${subfolder1Id}?`)) {
+          return new Response(
+            JSON.stringify({ id: subfolder1Id, parents: [rootId], trashed: false }),
+            { status: 200 }
+          );
+        }
+
+        if (urlStr.includes("upload/drive/v3/files?uploadType=resumable")) {
+          if (init?.body) {
+            capturedMetadata = JSON.parse(init.body);
+          }
+          return new Response(JSON.stringify({ id: "uploaded_doc_sub2" }), {
+            status: 200,
+            headers: { Location: "https://www.googleapis.com/upload/drive/v3/files?upload_id=mock_session_sub2" },
+          });
+        }
+
+        return originalFetch(input, init);
+      };
+
+      const req = createFakeReq({
+        method: "POST",
+        url: "/api/drive/upload-session",
+        token: adminToken,
+        body: {
+          name: "Deep_Nested_Doc.pdf",
+          mimeType: "application/pdf",
+          parentId: subfolder2Id,
+        },
+      });
+      const { res, getCode, getBody } = createFakeRes();
+
+      await driveHandler(req, res);
+
+      expect(getCode()).toBe(200);
+      const body = getBody();
+      expect(body.parentId).toBe(subfolder2Id);
+      expect(capturedMetadata).not.toBeNull();
+      // Verifies 2 levels deep destination is respected
+      expect(capturedMetadata.parents).toEqual([subfolder2Id]);
+      expect(capturedMetadata.parents).not.toEqual([subfolder1Id]);
+      expect(capturedMetadata.parents).not.toEqual([rootId]);
+    });
+
+    it("rejects upload with 403 if target folder is outside the vault hierarchy", async () => {
+      const outsideFolderId = "malicious_outside_folder_id";
+
+      const env = getEnv();
+      const adminToken = await createSessionToken({
+        id: 1,
+        email: env.ADMIN_EMAIL,
+        name: "Test Admin",
+        role: "admin",
+      });
+
+      global.fetch = async (input: any, init?: any) => {
+        const urlStr = typeof input === "string" ? input : input.url;
+
+        if (urlStr.includes("oauth2.googleapis.com/token")) {
+          return new Response(JSON.stringify({ access_token: "mock_token" }), { status: 200 });
+        }
+
+        // Outside folder -> parent is foreign folder that has no parents
+        if (urlStr.includes(`files/${outsideFolderId}?`)) {
+          return new Response(
+            JSON.stringify({ id: outsideFolderId, parents: ["foreign_root_id"], trashed: false }),
+            { status: 200 }
+          );
+        }
+
+        if (urlStr.includes("files/foreign_root_id?")) {
+          return new Response(
+            JSON.stringify({ id: "foreign_root_id", parents: [], trashed: false }),
+            { status: 200 }
+          );
+        }
+
+        return originalFetch(input, init);
+      };
+
+      const req = createFakeReq({
+        method: "POST",
+        url: "/api/drive/upload-session",
+        token: adminToken,
+        body: {
+          name: "Hacked_File.pdf",
+          mimeType: "application/pdf",
+          parentId: outsideFolderId,
+        },
+      });
+      const { res, getCode } = createFakeRes();
+
+      await driveHandler(req, res);
+
+      expect(getCode()).toBe(403);
+    });
+  });
+
+  // 10. FOLDER COLORS PERSISTENCE & MULTI-FOLDER STABILITY
+  describe("10. Folder Colors Persistence & Multi-Folder Stability", () => {
+    it("folders with no saved color receive fixed default 'sky', never random values", () => {
+      expect(DEFAULT_FOLDER_COLOR).toBe("sky");
+      const defaultPalette = getFolderPalette(undefined);
+      expect(defaultPalette.id).toBe("sky");
+      const randomPalette1 = getFolderPalette(undefined);
+      const randomPalette2 = getFolderPalette(undefined);
+      expect(randomPalette1.id).toBe(randomPalette2.id);
+    });
+
+    it("sets different colors on 3 folders, persists in appProperties, and each keeps its own color", async () => {
+      const folderA = { id: "folder_a", name: "Taxes", appProperties: { color: "emerald", folderColor: "emerald" } };
+      const folderB = { id: "folder_b", name: "Medical", appProperties: { color: "amber", folderColor: "amber" } };
+      const folderC = { id: "folder_c", name: "Legal", appProperties: { color: "rose", folderColor: "rose" } };
+
+      const paletteA = getFolderPalette(folderA.appProperties.color);
+      const paletteB = getFolderPalette(folderB.appProperties.color);
+      const paletteC = getFolderPalette(folderC.appProperties.color);
+
+      expect(paletteA.id).toBe("emerald");
+      expect(paletteB.id).toBe("amber");
+      expect(paletteC.id).toBe("rose");
+
+      // Verify they are all distinct and do not bleed into each other
+      expect(paletteA.id).not.toBe(paletteB.id);
+      expect(paletteB.id).not.toBe(paletteC.id);
+      expect(paletteA.id).not.toBe(paletteC.id);
+
+      // Verify simulated update on Folder B does not modify Folder A or Folder C
+      const updatedFolderB = {
+        ...folderB,
+        appProperties: { ...folderB.appProperties, color: "purple", folderColor: "purple" },
+      };
+      const updatedPaletteB = getFolderPalette(updatedFolderB.appProperties.color);
+
+      expect(updatedPaletteB.id).toBe("purple");
+      expect(getFolderPalette(folderA.appProperties.color).id).toBe("emerald");
+      expect(getFolderPalette(folderC.appProperties.color).id).toBe("rose");
+    });
+  });
+
+  // 11. VIEW DETAILS CLEANUP
+  describe("11. View Details Cleanup", () => {
+    it("DocDetailPanel retains preview, metadata, tags, notes, and Star, while duplicate actions are removed", () => {
+      const detailPath = path.resolve(import.meta.dirname, "../../src/components/docs/DocDetailPanel.tsx");
+      const content = fs.readFileSync(detailPath, "utf-8");
+
+      // Preserved essentials
+      expect(content).toContain("doc-detail-preview-box");
+      expect(content).toContain("doc-detail-star-btn");
+      expect(content).toContain("Uploaded By");
+      expect(content).toContain("Modified");
+      expect(content).toContain("Folder");
+      expect(content).toContain("Tags");
+      expect(content).toContain("Notes");
+
+      // Removed duplicates
+      expect(content).not.toContain("Save on this device");
+      expect(content).not.toContain("Download");
+      expect(content).not.toContain("Copy");
+      expect(content).not.toContain("Move to Bin");
     });
   });
 });

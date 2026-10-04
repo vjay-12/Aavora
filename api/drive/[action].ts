@@ -4,6 +4,7 @@ import {
   getVaultRootId,
   listDriveItems,
   getDriveFile,
+  listAllVaultFolders,
   createDriveFolder,
   renameDriveItem,
   moveDriveItem,
@@ -180,11 +181,13 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
           }
         }
 
+        const folderColor = isFolder ? (props.color || props.folderColor || "sky") : undefined;
         return {
           id: file.id,
           name: file.name,
           mimeType: file.mimeType,
           isFolder,
+          color: folderColor,
           size: file.size,
           modifiedTime: file.modifiedTime,
           createdTime: file.createdTime,
@@ -269,6 +272,27 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       });
 
       return json(res, { folder });
+    }
+
+    // 4b. GET /api/drive/folders (returns all nested vault folders with hierarchy path and color)
+    if (action === "folders") {
+      const folders = await listAllVaultFolders();
+      return json(res, { folders });
+    }
+
+    // 4c. POST /api/drive/folder-color or /api/drive/color (persists folder color to appProperties)
+    if (action === "folder-color" || action === "color") {
+      const body = await parseJsonBody<{ folderId: string; color: string }>(req);
+      if (!body.folderId || !body.color) {
+        return error(res, "Folder ID and color are required", 400);
+      }
+      await assertInsideVault(body.folderId);
+      const chosenColor = body.color.trim().toLowerCase();
+      await updateDriveAppProperties(body.folderId, {
+        color: chosenColor,
+        folderColor: chosenColor,
+      });
+      return json(res, { success: true, folderId: body.folderId, color: chosenColor });
     }
 
     // 5. GET /api/drive/file and GET /api/drive/download
@@ -741,6 +765,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       return json(res, {
         uploadUrl,
         fileName,
+        parentId: targetParent,
         uploadedByName,
         uploadedById,
         uploadedAt,

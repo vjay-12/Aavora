@@ -1,32 +1,19 @@
 import React, { useState, useEffect } from "react";
 import { formatBytes, formatDate } from "../../lib/utils";
 import { getUserFullName } from "../../lib/user-format";
-import {
-  saveFileOffline,
-  removeOfflineFile,
-  isFileOffline,
-} from "../../lib/offline-crypto";
 import { addRecentlyViewed } from "../../lib/recently-viewed";
 import {
   X,
   Star,
-  Download,
-  Trash2,
-  HardDriveDownload,
-  CheckCircle,
   Tag,
   FileText,
   Clock,
   User,
-  Shield,
-  Loader2,
-  Copy,
-  AlertTriangle,
+  Folder,
   Edit3,
   Check,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
-import { DELETE_RESTRICTED_MESSAGE } from "../../config/features";
 
 export interface DocItem {
   id: string;
@@ -42,15 +29,13 @@ export interface DocItem {
   thumbnailLink?: string;
   webViewLink?: string;
   parents?: string[];
+  folderName?: string;
 }
 
 interface DocDetailPanelProps {
   item: DocItem | null;
   onClose: () => void;
   onToggleStar: (item: DocItem) => Promise<void>;
-  onTrash: (item: DocItem) => Promise<void>;
-  onUpdateTagsNotes?: (driveId: string, tags: string[], notes: string) => Promise<void>;
-  onShowRestrictedToast?: (message: string) => void;
   onOpenPreview?: (item: DocItem) => void;
 }
 
@@ -58,16 +43,10 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
   item,
   onClose,
   onToggleStar,
-  onTrash,
-  onShowRestrictedToast,
   onOpenPreview,
 }) => {
   const { user, isAdmin } = useAuth();
   const canDelete = Boolean(isAdmin ?? user?.isAdmin);
-  const [restrictedToast, setRestrictedToast] = useState(false);
-  const [isOffline, setIsOffline] = useState(false);
-  const [isSavingOffline, setIsSavingOffline] = useState(false);
-  const [copiedLink, setCopiedLink] = useState(false);
 
   // Admin edit uploader state
   const [isEditingUploader, setIsEditingUploader] = useState(false);
@@ -77,7 +56,6 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
 
   useEffect(() => {
     if (item && !item.isFolder) {
-      isFileOffline(item.id).then(setIsOffline);
       addRecentlyViewed({
         id: item.id,
         name: item.name,
@@ -92,36 +70,6 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
   }, [item]);
 
   if (!item) return null;
-
-  const handleDownload = () => {
-    window.open(`/api/drive/download?id=${item.id}`, "_blank");
-  };
-
-  const handleToggleOffline = async () => {
-    if (isOffline) {
-      await removeOfflineFile(item.id);
-      setIsOffline(false);
-    } else {
-      setIsSavingOffline(true);
-      try {
-        const res = await fetch(`/api/drive/download?id=${item.id}`);
-        if (!res.ok) throw new Error("Download failed");
-        const arrayBuf = await res.arrayBuffer();
-        await saveFileOffline(item.id, item.name, item.mimeType, arrayBuf);
-        setIsOffline(true);
-      } catch (err) {
-        console.error("Failed to save on device:", err);
-      } finally {
-        setIsSavingOffline(false);
-      }
-    }
-  };
-
-  const handleCopyLink = () => {
-    navigator.clipboard.writeText(window.location.origin + `/docs?fileId=${item.id}`);
-    setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2000);
-  };
 
   const handleSaveUploader = async () => {
     if (!uploaderInput.trim()) return;
@@ -156,15 +104,17 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
       : "Unknown");
 
   const tags = item.appProperties?.tags
-    ? (typeof item.appProperties.tags === "string" && item.appProperties.tags.startsWith("[")
-        ? JSON.parse(item.appProperties.tags)
-        : item.appProperties.tags.split(","))
+    ? typeof item.appProperties.tags === "string" && item.appProperties.tags.startsWith("[")
+      ? JSON.parse(item.appProperties.tags)
+      : typeof item.appProperties.tags === "string"
+      ? item.appProperties.tags.split(",")
+      : []
     : [];
   const notes = item.appProperties?.notes || "";
 
   return (
     <div className="fixed inset-y-0 right-0 z-50 w-full sm:w-96 bg-[#090d16] border-l border-white/10 shadow-2xl flex flex-col justify-between overflow-y-auto animate-slideIn">
-      {/* Header - Contains Star and Close; NO Download button */}
+      {/* Header - Contains Star and Close */}
       <div className="p-4 border-b border-white/10 flex items-center justify-between sticky top-0 bg-[#090d16]/95 backdrop-blur-md z-10">
         <div className="flex items-center gap-2">
           <button
@@ -226,16 +176,9 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
               </span>
             </div>
           )}
-
-          {isOffline && (
-            <div className="absolute top-3 right-3 px-2 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-[10px] text-emerald-300 font-medium flex items-center gap-1 backdrop-blur-md">
-              <Shield className="w-3 h-3 text-emerald-400" />
-              <span>Saved on this device</span>
-            </div>
-          )}
         </div>
 
-        {/* Name */}
+        {/* Name and ID */}
         <div>
           <h2 className="text-base font-bold text-white break-words">{item.name}</h2>
           <p className="text-xs text-muted-foreground font-mono mt-1 break-all">
@@ -243,7 +186,7 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
           </p>
         </div>
 
-        {/* Metadata Grid */}
+        {/* Metadata Information */}
         <div className="space-y-3 bg-white/5 p-4 rounded-2xl border border-white/5 text-xs">
           <div className="flex items-center justify-between">
             <span className="text-muted-foreground flex items-center gap-1.5">
@@ -252,6 +195,18 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
             </span>
             <span className="font-medium text-white">{formatDate(item.modifiedTime)}</span>
           </div>
+
+          {item.folderName && (
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground flex items-center gap-1.5">
+                <Folder className="w-3.5 h-3.5 text-purple-400" />
+                Folder
+              </span>
+              <span className="font-medium text-white truncate max-w-[180px]">
+                {item.folderName}
+              </span>
+            </div>
+          )}
 
           {item.size && (
             <div className="flex items-center justify-between">
@@ -279,7 +234,7 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
                   type="button"
                   onClick={handleSaveUploader}
                   disabled={isSavingUploader || !uploaderInput.trim()}
-                  className="p-1 rounded bg-sky-500 hover:bg-sky-400 text-slate-950 disabled:opacity-50"
+                  className="p-1 rounded bg-sky-500 hover:bg-sky-400 text-slate-950 disabled:opacity-50 min-h-[30px] min-w-[30px] flex items-center justify-center"
                   title="Save uploader"
                 >
                   <Check className="w-3 h-3" />
@@ -287,7 +242,7 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
                 <button
                   type="button"
                   onClick={() => setIsEditingUploader(false)}
-                  className="p-1 rounded bg-white/10 hover:bg-white/20 text-white"
+                  className="p-1 rounded bg-white/10 hover:bg-white/20 text-white min-h-[30px] min-w-[30px] flex items-center justify-center"
                   title="Cancel"
                 >
                   <X className="w-3 h-3" />
@@ -303,7 +258,7 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
                       setUploaderInput(resolvedUploader === "Unknown" ? "" : resolvedUploader);
                       setIsEditingUploader(true);
                     }}
-                    className="p-1 rounded-md text-muted-foreground hover:text-sky-400 transition"
+                    className="p-1 rounded-md text-muted-foreground hover:text-sky-400 transition min-h-[30px] min-w-[30px] flex items-center justify-center"
                     title="Edit uploader name"
                   >
                     <Edit3 className="w-3 h-3" />
@@ -343,105 +298,6 @@ export const DocDetailPanel: React.FC<DocDetailPanelProps> = ({
             </p>
           </div>
         )}
-
-        {/* Device Offline Vault Action */}
-        {!item.isFolder && (
-          <div className="p-4 rounded-2xl bg-gradient-to-r from-sky-500/10 to-indigo-500/10 border border-sky-500/20 space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Shield className="w-4 h-4 text-sky-400" />
-                <span className="text-xs font-semibold text-white">Saved on this device</span>
-              </div>
-              {isOffline && (
-                <span className="text-[10px] text-emerald-400 font-medium flex items-center gap-1">
-                  <CheckCircle className="w-3 h-3" /> Ready offline
-                </span>
-              )}
-            </div>
-            <p className="text-[11px] text-muted-foreground leading-relaxed">
-              {isOffline
-                ? "This document is saved safely on this device so you can view it even without an internet connection."
-                : "Save a copy on this phone or laptop to read without internet access."}
-            </p>
-            <button
-              type="button"
-              onClick={handleToggleOffline}
-              disabled={isSavingOffline}
-              className={`w-full py-2.5 px-3 rounded-xl text-xs font-semibold transition-all min-h-[44px] flex items-center justify-center gap-2 ${
-                isOffline
-                  ? "bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30"
-                  : "bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/30"
-              }`}
-            >
-              {isSavingOffline ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>Saving to device...</span>
-                </>
-              ) : isOffline ? (
-                <>
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Remove from this device</span>
-                </>
-              ) : (
-                <>
-                  <HardDriveDownload className="w-3.5 h-3.5" />
-                  <span>Save on this device</span>
-                </>
-              )}
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Footer Action Buttons */}
-      <div className="p-4 border-t border-white/10 bg-[#090d16] space-y-2">
-        {restrictedToast && (
-          <div className="p-2.5 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs flex items-center gap-2 animate-fadeIn">
-            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-            <span>{DELETE_RESTRICTED_MESSAGE}</span>
-          </div>
-        )}
-        <div className="flex gap-2">
-          {!item.isFolder && (
-            <button
-              onClick={handleDownload}
-              className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-semibold text-xs shadow-lg shadow-sky-500/25 transition-all active:scale-95"
-            >
-              <Download className="w-4 h-4" />
-              <span>Download File</span>
-            </button>
-          )}
-          <button
-            onClick={handleCopyLink}
-            className="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white border border-white/10 transition-colors"
-            title="Copy Document Link"
-          >
-            {copiedLink ? <CheckCircle className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-          </button>
-          <button
-            data-testid="doc-detail-trash"
-            onClick={(e) => {
-              e.stopPropagation();
-              if (!canDelete) {
-                setRestrictedToast(true);
-                setTimeout(() => setRestrictedToast(false), 3500);
-                onShowRestrictedToast?.(DELETE_RESTRICTED_MESSAGE);
-                return;
-              }
-              onTrash(item);
-            }}
-            aria-disabled={!canDelete}
-            title={canDelete ? "Move to Bin" : DELETE_RESTRICTED_MESSAGE}
-            className={`p-2.5 rounded-xl border transition-colors ${
-              canDelete
-                ? "bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border-rose-500/20 cursor-pointer active:scale-95"
-                : "bg-white/5 text-muted-foreground/40 border-white/5 opacity-50 cursor-not-allowed hover:bg-white/5"
-            }`}
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
-        </div>
       </div>
     </div>
   );

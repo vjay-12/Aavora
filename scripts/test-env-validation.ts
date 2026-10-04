@@ -20,7 +20,16 @@ export async function testEnvValidation() {
   const originalEnv = { ...process.env };
   let allPassed = true;
 
-  for (const varName of REQUIRED_VARS) {
+  const CORE_REQUIRED_VARS = [
+    "DATABASE_URL",
+    "GOOGLE_CLIENT_ID",
+    "GOOGLE_CLIENT_SECRET",
+    "GOOGLE_DRIVE_ROOT_FOLDER_ID",
+    "ADMIN_EMAIL",
+    "SESSION_SECRET",
+  ] as const;
+
+  for (const varName of CORE_REQUIRED_VARS) {
     // Clone env and delete one variable
     const testEnv = { ...originalEnv };
     delete testEnv[varName];
@@ -44,6 +53,29 @@ export async function testEnvValidation() {
         console.log(`[PASS] Correctly rejected missing ${varName} with descriptive safe error`);
       } else {
         console.error(`[FAIL] ${varName} check failed. Mentions missing: ${mentionsMissing}, Mentions var: ${mentionsVar}, Leaked: ${leakedSecret}`);
+        allPassed = false;
+      }
+    }
+  }
+
+  // Test APP_URL missing when no redirect URI or cloud URL is provided
+  {
+    const testEnv = { ...originalEnv };
+    delete testEnv["APP_URL"];
+    delete testEnv["GOOGLE_REDIRECT_URI"];
+    delete testEnv["VERCEL_URL"];
+    delete testEnv["VERCEL_PROJECT_PRODUCTION_URL"];
+
+    try {
+      validateEnv(testEnv);
+      console.error("[FAIL] App should have failed when both APP_URL and GOOGLE_REDIRECT_URI are missing");
+      allPassed = false;
+    } catch (err: any) {
+      const message = err.message || "";
+      if (message.includes("APP_URL")) {
+        console.log("[PASS] Correctly rejected missing APP_URL when no redirect URI or cloud URL is provided");
+      } else {
+        console.error("[FAIL] Missing APP_URL error did not mention APP_URL");
         allPassed = false;
       }
     }

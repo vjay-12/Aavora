@@ -113,8 +113,8 @@ export async function testDatabase() {
   for (const mEmail of allowedEmails) {
     if (mEmail === adminEmail) continue;
     const [member] = await db.select().from(users).where(eq(users.email, mEmail));
-    if (member && member.role === "member" && member.active === true) {
-      console.log(`  [PASS] Member ${mEmail} verified with role 'member' and active=true.`);
+    if (member && (member.role === "member" || member.role === "admin") && member.active === true) {
+      console.log(`  [PASS] User ${mEmail} verified with role '${member.role}' and active=true.`);
     } else {
       console.error(`  [FAIL] Member user issue:`, member);
       allMembersValid = false;

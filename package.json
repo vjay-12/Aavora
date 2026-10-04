@@ -15,7 +15,7 @@
     "test:unit": "vitest run",
     "test:integration": "tsx scripts/test-all.ts",
     "test:env": "tsx scripts/test-env-validation.ts",
-    "test:db": "tsx scripts/test-db-neon.ts",
+    "test:db": "tsx scripts/test-database.ts",
     "test:drive": "tsx scripts/test-drive-connection.ts",
     "test:auth": "tsx scripts/test-auth-and-security.ts",
     "e2e": "playwright test",

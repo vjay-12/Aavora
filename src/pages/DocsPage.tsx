@@ -34,9 +34,15 @@ import {
   Pencil,
   FolderInput,
   HardDrive,
+  Palette,
+  Download,
+  Copy,
+  Info,
+  Check,
 } from "lucide-react";
 import { DELETE_RESTRICTED_MESSAGE, MOVE_TO_BIN_MESSAGE } from "../config/features";
 import { saveFileOffline, removeOfflineFile, listOfflineFiles } from "../lib/offline-crypto";
+import { getFolderPalette, FOLDER_COLOR_LIST, FolderColorId } from "../config/colors";
 
 interface DriveItem {
   id: string;
@@ -47,6 +53,8 @@ interface DriveItem {
   modifiedTime?: string;
   lastModifyingUser?: string;
   parents?: string[];
+  color?: string;
+  appProperties?: Record<string, string>;
 }
 
 import { UploadModal } from "../components/docs/UploadModal";
@@ -62,6 +70,7 @@ export const DocsPage: React.FC = () => {
   const folderId = searchParams.get("folderId") || undefined;
   const folderName = searchParams.get("folderName") || "Vault Root";
   const urlMsg = searchParams.get("msg");
+  const fromHome = searchParams.get("from") === "home";
 
   const [uploadToast, setUploadToast] = useState<{ show: boolean; fileName: string }>({
     show: false,
@@ -107,6 +116,15 @@ export const DocsPage: React.FC = () => {
     item: null,
     targetFolderId: "",
   });
+  const [colorModal, setColorModal] = useState<{
+    isOpen: boolean;
+    folder: DriveItem | null;
+    selectedColor: FolderColorId;
+  }>({
+    isOpen: false,
+    folder: null,
+    selectedColor: "sky",
+  });
   const [folderConfirmInput, setFolderConfirmInput] = useState("");
   const [offlineMap, setOfflineMap] = useState<Record<string, boolean>>({});
 
@@ -118,18 +136,59 @@ export const DocsPage: React.FC = () => {
     });
   }, []);
 
-  const { data: rootFoldersData } = useQuery({
-    queryKey: ["vault-folders-for-move"],
+  // Fetch all nested folders for Move modal
+  const { data: allFoldersData } = useQuery({
+    queryKey: ["vault-all-folders"],
     queryFn: async () => {
-      const res = await fetch("/api/drive/list");
-      if (!res.ok) return [];
-      const d = await res.json();
-      return (d.items || d.files || []).filter((i: any) => i.isFolder);
+      const res = await fetch("/api/drive/folders");
+      if (!res.ok) return { folders: [] };
+      return res.json();
     },
     enabled: moveModal.isOpen,
-    staleTime: 60000,
+    staleTime: 30000,
   });
-  const availableFolders = rootFoldersData || [];
+  const availableFolders: Array<{ id: string; name: string; path: string }> =
+    allFoldersData?.folders || [];
+
+  const handleUpdateFolderColor = async (targetFolder: DriveItem, newColor: FolderColorId) => {
+    setColorModal({ isOpen: false, folder: null, selectedColor: "sky" });
+
+    const prevData = queryClient.getQueryData(["drive-list", folderId]);
+    // Optimistic cache update
+    queryClient.setQueryData(["drive-list", folderId], (old: any) => {
+      if (!old) return old;
+      const updateList = (list: any[]) =>
+        list.map((it) =>
+          it.id === targetFolder.id
+            ? { ...it, color: newColor, appProperties: { ...(it.appProperties || {}), color: newColor } }
+            : it
+        );
+      return {
+        ...old,
+        items: updateList(old.items || []),
+        files: updateList(old.files || []),
+      };
+    });
+
+    try {
+      const res = await fetch("/api/drive/folder-color", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ folderId: targetFolder.id, color: newColor }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to update folder color");
+      }
+      queryClient.invalidateQueries({ queryKey: ["vault-all-folders"] });
+      queryClient.invalidateQueries({ queryKey: ["drive-categories"] });
+      setUploadToast({ show: true, fileName: `Updated color for "${targetFolder.name}".` });
+    } catch (err: any) {
+      // Rollback on failure
+      queryClient.setQueryData(["drive-list", folderId], prevData);
+      alert(err.message || "Failed to update folder color");
+    }
+  };
 
   const handleToggleStar = async (item: DriveItem | DocItem, e?: React.MouseEvent) => {
     e?.stopPropagation();
@@ -528,15 +587,6 @@ export const DocsPage: React.FC = () => {
     }
   };
 
-  const categoryPalettes = [
-    { bg: "from-sky-500/20 to-blue-600/10", border: "border-sky-500/30", icon: "text-sky-400" },
-    { bg: "from-indigo-500/20 to-purple-600/10", border: "border-indigo-500/30", icon: "text-indigo-400" },
-    { bg: "from-emerald-500/20 to-teal-600/10", border: "border-emerald-500/30", icon: "text-emerald-400" },
-    { bg: "from-amber-500/20 to-orange-600/10", border: "border-amber-500/30", icon: "text-amber-400" },
-    { bg: "from-rose-500/20 to-pink-600/10", border: "border-rose-500/30", icon: "text-rose-400" },
-    { bg: "from-violet-500/20 to-fuchsia-600/10", border: "border-violet-500/30", icon: "text-violet-400" },
-  ];
-
   const getFileIcon = (mimeType: string) => {
     if (mimeType.includes("image")) return FileImage;
     if (mimeType.includes("spreadsheet") || mimeType.includes("excel")) return FileSpreadsheet;
@@ -850,19 +900,105 @@ export const DocsPage: React.FC = () => {
               </h2>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                {folders.map((folder, index) => {
-                  const palette = categoryPalettes[index % categoryPalettes.length];
+                {folders.map((folder) => {
+                  const palette = getFolderPalette(folder.color || folder.appProperties?.color);
+                  const isMenuOpen = openMenuId === `folder-${folder.id}`;
                   return (
                     <div
                       key={folder.id}
                       onClick={() => handleOpenFolder(folder)}
-                      className={`glass-card p-5 rounded-2xl border ${palette.border} bg-gradient-to-br ${palette.bg} cursor-pointer group flex flex-col justify-between h-32 hover:scale-[1.01] transition-all`}
+                      className={`glass-card p-5 rounded-2xl border ${palette.border} bg-gradient-to-br ${palette.bg} cursor-pointer group flex flex-col justify-between h-32 hover:scale-[1.01] transition-all relative ${
+                        isMenuOpen ? "z-30" : "z-0"
+                      }`}
                     >
                       <div className="flex items-start justify-between">
                         <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center">
                           <Folder className={`w-5 h-5 ${palette.icon}`} />
                         </div>
-                        <ChevronRight className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                        <div className="flex items-center gap-1">
+                          <div className="relative" onClick={(e) => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              data-testid={`folder-menu-trigger-${folder.id}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setOpenMenuId(isMenuOpen ? null : `folder-${folder.id}`);
+                              }}
+                              className="p-1.5 rounded-lg bg-black/20 hover:bg-black/40 text-muted-foreground hover:text-white transition"
+                              title="Folder options"
+                            >
+                              <MoreVertical className="w-4 h-4" />
+                            </button>
+                            {isMenuOpen && (
+                              <div
+                                className="absolute right-0 top-8 z-50 w-44 bg-[#0d1322] border border-white/10 rounded-2xl shadow-2xl p-1.5 text-xs text-foreground animate-scaleUp"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <button
+                                  type="button"
+                                  data-testid={`folder-change-color-${folder.id}`}
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    setColorModal({
+                                      isOpen: true,
+                                      folder,
+                                      selectedColor: ((folder.color || folder.appProperties?.color) as FolderColorId) || "sky",
+                                    });
+                                  }}
+                                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                >
+                                  <Palette className="w-3.5 h-3.5 text-sky-400" />
+                                  <span>Change color</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    setRenameModal({ isOpen: true, item: folder, newName: folder.name });
+                                  }}
+                                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                >
+                                  <Pencil className="w-3.5 h-3.5 text-indigo-400" />
+                                  <span>Rename</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    setMoveModal({ isOpen: true, item: folder, targetFolderId: "" });
+                                  }}
+                                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                >
+                                  <FolderInput className="w-3.5 h-3.5 text-purple-400" />
+                                  <span>Move</span>
+                                </button>
+                                <div className="border-t border-white/5 my-1" />
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    setOpenMenuId(null);
+                                    if (!canDelete) {
+                                      showDeleteRestricted(e);
+                                      return;
+                                    }
+                                    handleInitiateTrash([folder]);
+                                  }}
+                                  aria-disabled={!canDelete}
+                                  title={canDelete ? "Move to Bin" : DELETE_RESTRICTED_MESSAGE}
+                                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl transition min-h-[36px] ${
+                                    canDelete
+                                      ? "hover:bg-rose-500/10 text-rose-400 cursor-pointer"
+                                      : "opacity-50 cursor-not-allowed text-muted-foreground/50 hover:bg-transparent"
+                                  }`}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>Move to Bin</span>
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                          <ChevronRight className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </div>
                       </div>
 
                       <div>
@@ -1005,8 +1141,42 @@ export const DocsPage: React.FC = () => {
                                     }}
                                     className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
                                   >
-                                    <FileText className="w-3.5 h-3.5 text-sky-400" />
+                                    <Info className="w-3.5 h-3.5 text-sky-400" />
                                     <span>View details</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenMenuId(null);
+                                      window.open(`/api/drive/file?id=${encodeURIComponent(file.id)}&mode=download`, "_blank");
+                                    }}
+                                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                  >
+                                    <Download className="w-3.5 h-3.5 text-emerald-400" />
+                                    <span>Download</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      setOpenMenuId(null);
+                                      handleToggleOffline(file, e);
+                                    }}
+                                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                  >
+                                    <HardDrive className={`w-3.5 h-3.5 ${isSaved ? "text-emerald-400" : "text-muted-foreground"}`} />
+                                    <span>{isSaved ? "Remove from this device" : "Save on this device"}</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setOpenMenuId(null);
+                                      navigator.clipboard.writeText(`${window.location.origin}/docs?fileId=${file.id}`);
+                                      setUploadToast({ show: true, fileName: "Document link copied to clipboard." });
+                                    }}
+                                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                  >
+                                    <Copy className="w-3.5 h-3.5 text-cyan-400" />
+                                    <span>Copy link</span>
                                   </button>
                                   <button
                                     type="button"
@@ -1024,17 +1194,6 @@ export const DocsPage: React.FC = () => {
                                       }`}
                                     />
                                     <span>{isStarred ? "Remove star" : "Star"}</span>
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      setOpenMenuId(null);
-                                      handleToggleOffline(file, e);
-                                    }}
-                                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
-                                  >
-                                    <HardDrive className={`w-3.5 h-3.5 ${isSaved ? "text-emerald-400" : "text-muted-foreground"}`} />
-                                    <span>{isSaved ? "Remove from this device" : "Save on this device"}</span>
                                   </button>
                                   <button
                                     type="button"
@@ -1200,8 +1359,42 @@ export const DocsPage: React.FC = () => {
                                   }}
                                   className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
                                 >
-                                  <FileText className="w-3.5 h-3.5 text-sky-400" />
+                                  <Info className="w-3.5 h-3.5 text-sky-400" />
                                   <span>View details</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    window.open(`/api/drive/file?id=${encodeURIComponent(file.id)}&mode=download`, "_blank");
+                                  }}
+                                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                >
+                                  <Download className="w-3.5 h-3.5 text-emerald-400" />
+                                  <span>Download</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    setOpenMenuId(null);
+                                    handleToggleOffline(file, e);
+                                  }}
+                                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                >
+                                  <HardDrive className={`w-3.5 h-3.5 ${isSaved ? "text-emerald-400" : "text-muted-foreground"}`} />
+                                  <span>{isSaved ? "Remove from this device" : "Save on this device"}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    navigator.clipboard.writeText(`${window.location.origin}/docs?fileId=${file.id}`);
+                                    setUploadToast({ show: true, fileName: "Document link copied to clipboard." });
+                                  }}
+                                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
+                                >
+                                  <Copy className="w-3.5 h-3.5 text-cyan-400" />
+                                  <span>Copy link</span>
                                 </button>
                                 <button
                                   type="button"
@@ -1219,17 +1412,6 @@ export const DocsPage: React.FC = () => {
                                     }`}
                                   />
                                   <span>{isStarred ? "Remove star" : "Star"}</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    setOpenMenuId(null);
-                                    handleToggleOffline(file, e);
-                                  }}
-                                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-muted-foreground hover:text-white transition font-medium min-h-[36px]"
-                                >
-                                  <HardDrive className={`w-3.5 h-3.5 ${isSaved ? "text-emerald-400" : "text-muted-foreground"}`} />
-                                  <span>{isSaved ? "Remove from this device" : "Save on this device"}</span>
                                 </button>
                                 <button
                                   type="button"
@@ -1420,10 +1602,9 @@ export const DocsPage: React.FC = () => {
                 className="w-full px-3.5 py-2.5 rounded-xl bg-[#070b12] border border-white/10 text-xs text-white focus:outline-none focus:border-purple-500"
               >
                 <option value="">Select a folder...</option>
-                <option value={data?.rootFolderId || ""}>Vault Root</option>
                 {availableFolders.map((f: any) => (
                   <option key={f.id} value={f.id}>
-                    {f.name}
+                    {f.path || f.name}
                   </option>
                 ))}
               </select>
@@ -1445,6 +1626,61 @@ export const DocsPage: React.FC = () => {
               >
                 Move
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Change Folder Color Modal */}
+      {colorModal.isOpen && colorModal.folder && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-fadeIn">
+          <div className="relative w-full max-w-sm bg-[#0d1322] border border-white/10 rounded-3xl p-6 shadow-2xl text-foreground animate-scaleUp">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-2xl bg-sky-500/20 text-sky-400 flex items-center justify-center">
+                  <Palette className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Change Folder Color</h3>
+                  <p className="text-xs text-muted-foreground truncate max-w-[200px]">{colorModal.folder.name}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setColorModal({ isOpen: false, folder: null, selectedColor: "sky" })}
+                className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <label className="block text-xs font-medium text-muted-foreground">Select a Color</label>
+              <div className="flex items-center justify-between py-2 px-1">
+                {FOLDER_COLOR_LIST.map((c) => (
+                  <button
+                    type="button"
+                    key={c.id}
+                    onClick={() => handleUpdateFolderColor(colorModal.folder!, c.id)}
+                    title={c.label}
+                    className={`w-9 h-9 rounded-full ${c.badge} transition-transform hover:scale-110 flex items-center justify-center ${
+                      colorModal.selectedColor === c.id ? "ring-2 ring-white ring-offset-2 ring-offset-[#0d1322] scale-110" : "opacity-80 hover:opacity-100"
+                    }`}
+                  >
+                    {colorModal.selectedColor === c.id && <Check className="w-4 h-4 text-white" />}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex justify-end pt-2">
+                <button
+                  type="button"
+                  onClick={() => setColorModal({ isOpen: false, folder: null, selectedColor: "sky" })}
+                  className="px-4 py-2.5 text-xs font-medium rounded-xl bg-white/5 hover:bg-white/10 text-muted-foreground hover:text-white"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1491,18 +1727,49 @@ export const DocsPage: React.FC = () => {
       <NewFolderModal
         isOpen={showNewFolderModal}
         parentId={folderId || data?.rootFolderId}
-        onClose={() => setShowNewFolderModal(false)}
-        onSuccess={() => refetch()}
+        parentName={folderName || "Vault Root"}
+        onClose={() => {
+          setShowNewFolderModal(false);
+          if (searchParams.get("action") === "new-folder") {
+            const next = new URLSearchParams(searchParams);
+            next.delete("action");
+            setSearchParams(next, { replace: true });
+          }
+        }}
+        onSuccess={() => {
+          refetch();
+          if (searchParams.get("action") === "new-folder") {
+            const next = new URLSearchParams(searchParams);
+            next.delete("action");
+            setSearchParams(next, { replace: true });
+          }
+        }}
       />
 
       {/* Upload Modal */}
       <UploadModal
         isOpen={showUploadModal}
         parentId={folderId || data?.rootFolderId}
-        onClose={() => setShowUploadModal(false)}
+        parentName={folderName || "Vault Root"}
+        fromHome={fromHome}
+        onClose={() => {
+          setShowUploadModal(false);
+          if (searchParams.get("action") === "upload") {
+            const next = new URLSearchParams(searchParams);
+            next.delete("action");
+            next.delete("from");
+            setSearchParams(next, { replace: true });
+          }
+        }}
         onUploadSuccess={(uploadedName) => {
           refetch();
           setShowUploadModal(false);
+          if (searchParams.get("action") === "upload") {
+            const next = new URLSearchParams(searchParams);
+            next.delete("action");
+            next.delete("from");
+            setSearchParams(next, { replace: true });
+          }
           setUploadToast({
             show: true,
             fileName: uploadedName || "Document",
@@ -1512,24 +1779,11 @@ export const DocsPage: React.FC = () => {
 
       {/* Document Detail & Action Panel */}
       <DocDetailPanel
-        item={selectedDoc}
+        item={selectedDoc ? { ...selectedDoc, folderName: selectedDoc.folderName || folderName || "Vault Root" } : null}
         onClose={() => setSelectedDoc(null)}
         onOpenPreview={(item) => setPreviewDoc(item)}
-        onShowRestrictedToast={(msg) => setRestrictedToast(msg)}
         onToggleStar={async (item) => {
-          await fetch("/api/stars", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              driveId: item.id,
-              name: item.name,
-              isStarred: !item.starred,
-            }),
-          });
-          refetch();
-        }}
-        onTrash={async (item) => {
-          handleInitiateTrash([item]);
+          await handleToggleStar(item);
         }}
       />
 

@@ -146,19 +146,17 @@ test.describe("Delete Restriction & Bin UI (Desktop & Mobile)", () => {
         DELETE_RESTRICTED_MESSAGE
       );
 
-      // 3. Document Detail Panel Delete Button
+      // 3. Document Detail Panel Cleanup Verification
       // Switch back to grid view and open details from card menu
       await page.getByRole("button", { name: "Grid View" }).click();
       await page.locator("[data-testid='card-menu-trigger-test-file-1']").click();
       await page.getByRole("button", { name: "View Details" }).click();
       await expect(page.getByText("Document Details")).toBeVisible();
 
+      // Duplicate actions must NOT be present in the details panel
       const detailTrashBtn = page.locator("[data-testid='doc-detail-trash']");
-      await expect(detailTrashBtn).toBeVisible();
-      await expect(detailTrashBtn).toHaveAttribute("aria-disabled", "true");
-
-      await detailTrashBtn.click({ force: true });
-      await expect(page.getByText(DELETE_RESTRICTED_MESSAGE).first()).toBeVisible();
+      await expect(detailTrashBtn).not.toBeVisible();
+      await expect(page.locator("text='Save on this device'").locator("visible=true")).toHaveCount(0);
 
       // Close detail panel
       const closeBtn = page.locator("[data-testid='doc-detail-close']");

@@ -626,6 +626,110 @@ export async function getUniqueDriveItemName(desiredName: string, parentId: stri
   }
 }
 
+export interface VaultFolderItem {
+  id: string;
+  name: string;
+  parentId?: string;
+  path: string;
+  color?: string;
+}
+
+/**
+ * Lists all non-trashed folders residing strictly inside the DRIVE_ROOT_FOLDER_ID tree.
+ * Builds readable hierarchy paths (e.g. "Vault Root", "Vault Root / Tax / 2026")
+ * and extracts their stored color property.
+ */
+export async function listAllVaultFolders(): Promise<VaultFolderItem[]> {
+  const rootId = getVaultRootId();
+  const rootItem: VaultFolderItem = {
+    id: rootId,
+    name: "Vault Root",
+    path: "Vault Root",
+    color: "sky",
+  };
+
+  try {
+    const accessToken = await getAdminAccessToken();
+    const q = "mimeType = 'application/vnd.google-apps.folder' and trashed = false";
+    const fields = "files(id, name, parents, appProperties)";
+    const url = new URL("https://www.googleapis.com/drive/v3/files");
+    url.searchParams.set("q", q);
+    url.searchParams.set("fields", fields);
+    url.searchParams.set("pageSize", "200");
+    url.searchParams.set("supportsAllDrives", "true");
+    url.searchParams.set("includeItemsFromAllDrives", "true");
+
+    const res = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    if (!res.ok) {
+      return [rootItem];
+    }
+
+    const data = await res.json().catch(() => ({}));
+    const files: any[] = data.files || [];
+
+    const folderMap = new Map<string, { id: string; name: string; parents: string[]; color: string }>();
+    for (const f of files) {
+      folderMap.set(f.id, {
+        id: f.id,
+        name: f.name,
+        parents: f.parents || [],
+        color: f.appProperties?.color || f.appProperties?.folderColor || "sky",
+      });
+    }
+
+    const isChildOfRoot = (id: string, visited = new Set<string>()): boolean => {
+      if (id === rootId) return true;
+      if (visited.has(id)) return false;
+      visited.add(id);
+      const item = folderMap.get(id);
+      if (!item || !item.parents) return false;
+      for (const p of item.parents) {
+        if (p === rootId || isChildOfRoot(p, visited)) return true;
+      }
+      return false;
+    };
+
+    const getFolderPath = (id: string, visited = new Set<string>()): string => {
+      if (id === rootId) return "Vault Root";
+      if (visited.has(id)) return "";
+      visited.add(id);
+      const item = folderMap.get(id);
+      if (!item) return "";
+      const parentId = item.parents?.[0];
+      if (!parentId || parentId === rootId) return item.name;
+      const parentPath = getFolderPath(parentId, visited);
+      return parentPath ? `${parentPath} / ${item.name}` : item.name;
+    };
+
+    const results: VaultFolderItem[] = [rootItem];
+    for (const f of files) {
+      if (f.id !== rootId && isChildOfRoot(f.id)) {
+        results.push({
+          id: f.id,
+          name: f.name,
+          parentId: f.parents?.[0] || rootId,
+          path: getFolderPath(f.id),
+          color: f.appProperties?.color || f.appProperties?.folderColor || "sky",
+        });
+      }
+    }
+
+    results.sort((a, b) => {
+      if (a.id === rootId) return -1;
+      if (b.id === rootId) return 1;
+      return a.path.localeCompare(b.path);
+    });
+
+    return results;
+  } catch (err) {
+    console.warn("[listAllVaultFolders] Fallback to root:", err);
+    return [rootItem];
+  }
+}
+
 export async function createDriveFolder(
   name: string,
   parentId?: string,
@@ -639,15 +743,16 @@ export async function createDriveFolder(
 
   const safeName = await getUniqueDriveItemName(name.trim(), targetParent);
   const accessToken = await getAdminAccessToken();
+  const folderColor = (color || "sky").trim().toLowerCase();
   const body: Record<string, unknown> = {
     name: safeName,
     mimeType: "application/vnd.google-apps.folder",
     parents: [targetParent],
+    appProperties: {
+      color: folderColor,
+      folderColor,
+    },
   };
-
-  if (color) {
-    body.appProperties = { folderColor: color };
-  }
 
   const res = await fetch("https://www.googleapis.com/drive/v3/files?supportsAllDrives=true", {
     method: "POST",

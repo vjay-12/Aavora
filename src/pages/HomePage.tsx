@@ -19,6 +19,7 @@ import {
   AlertTriangle,
   FolderPlus,
 } from "lucide-react";
+import { getFolderPalette } from "../config/colors";
 
 export const HomePage: React.FC = () => {
   const { user } = useAuth();
@@ -276,7 +277,7 @@ export const HomePage: React.FC = () => {
           </div>
           <div className="grid grid-cols-2 gap-2">
             <button
-              onClick={() => navigate("/docs?action=upload")}
+              onClick={() => navigate("/docs?action=upload&from=home")}
               className="flex items-center justify-center gap-2 p-3 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/30 text-sky-300 text-xs font-medium transition-colors"
             >
               <Upload className="w-4 h-4" />
@@ -347,19 +348,19 @@ export const HomePage: React.FC = () => {
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 md:gap-4">
-            {categories.map((cat: any, index: number) => {
-              const theme = categoryThemes[index % categoryThemes.length];
+            {categories.map((cat: any) => {
+              const palette = getFolderPalette(cat.color || cat.appProperties?.color);
               return (
                 <div
                   key={cat.id}
                   onClick={() =>
                     navigate(`/docs?folderId=${cat.id}&folderName=${encodeURIComponent(cat.name)}`)
                   }
-                  className={`glass-card p-4 rounded-2xl border ${theme.border} cursor-pointer group flex flex-col justify-between h-32 hover:scale-[1.02] transition-all`}
+                  className={`glass-card p-4 rounded-2xl border ${palette.border} cursor-pointer group flex flex-col justify-between h-32 hover:scale-[1.02] transition-all`}
                 >
                   <div className="flex items-start justify-between">
                     <div
-                      className={`w-10 h-10 rounded-xl bg-gradient-to-tr ${theme.gradient} flex items-center justify-center ${theme.text}`}
+                      className={`w-10 h-10 rounded-xl bg-gradient-to-tr ${palette.bg} flex items-center justify-center ${palette.icon}`}
                     >
                       <Folder className="w-5 h-5" />
                     </div>

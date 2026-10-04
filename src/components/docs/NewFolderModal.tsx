@@ -1,9 +1,11 @@
 import React, { useState } from "react";
-import { FolderPlus, X, Palette, Loader2 } from "lucide-react";
+import { FolderPlus, X, Palette, Loader2, Folder } from "lucide-react";
+import { FOLDER_COLOR_LIST, DEFAULT_FOLDER_COLOR, FolderColorId } from "../../config/colors";
 
 interface NewFolderModalProps {
   isOpen: boolean;
   parentId?: string;
+  parentName?: string;
   onClose: () => void;
   onSuccess: () => void;
 }
@@ -11,24 +13,16 @@ interface NewFolderModalProps {
 export const NewFolderModal: React.FC<NewFolderModalProps> = ({
   isOpen,
   parentId,
+  parentName,
   onClose,
   onSuccess,
 }) => {
   const [folderName, setFolderName] = useState("");
-  const [selectedColor, setSelectedColor] = useState("sky");
+  const [selectedColor, setSelectedColor] = useState<FolderColorId>(DEFAULT_FOLDER_COLOR);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   if (!isOpen) return null;
-
-  const colors = [
-    { id: "sky", class: "bg-sky-500", label: "Sky" },
-    { id: "indigo", class: "bg-indigo-500", label: "Indigo" },
-    { id: "emerald", class: "bg-emerald-500", label: "Emerald" },
-    { id: "amber", class: "bg-amber-500", label: "Amber" },
-    { id: "rose", class: "bg-rose-500", label: "Rose" },
-    { id: "purple", class: "bg-purple-500", label: "Purple" },
-  ];
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -83,6 +77,15 @@ export const NewFolderModal: React.FC<NewFolderModalProps> = ({
           </button>
         </div>
 
+        {/* Parent folder indicator */}
+        <div className="mb-4 flex items-center gap-2 px-3 py-2 rounded-xl bg-white/5 border border-white/5 text-xs text-muted-foreground">
+          <Folder className="w-3.5 h-3.5 text-sky-400 flex-shrink-0" />
+          <span>Creating inside:</span>
+          <span className="font-semibold text-white truncate">
+            {parentName || "Vault Root"}
+          </span>
+        </div>
+
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-xs font-medium text-muted-foreground mb-1">
@@ -105,13 +108,16 @@ export const NewFolderModal: React.FC<NewFolderModalProps> = ({
               <span>Folder Color</span>
             </label>
             <div className="flex gap-2">
-              {colors.map((c) => (
+              {FOLDER_COLOR_LIST.map((c) => (
                 <button
                   type="button"
                   key={c.id}
                   onClick={() => setSelectedColor(c.id)}
-                  className={`w-7 h-7 rounded-full ${c.class} transition-transform ${
-                    selectedColor === c.id ? "scale-110 ring-2 ring-white ring-offset-2 ring-offset-[#0d1322]" : "opacity-70 hover:opacity-100"
+                  title={c.label}
+                  className={`w-7 h-7 rounded-full ${c.badge} transition-transform ${
+                    selectedColor === c.id
+                      ? "scale-110 ring-2 ring-white ring-offset-2 ring-offset-[#0d1322]"
+                      : "opacity-70 hover:opacity-100"
                   }`}
                 />
               ))}
